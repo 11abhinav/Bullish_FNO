@@ -22,22 +22,17 @@ HEADERS = {
 # GLOBALS
 # =========================================================
 
-FNO_STOCKS = set()
-
-last_fno_refresh = None
-
 seen_alerts = set()
 
 latest_market_data = {}
 
 # =========================================================
-# SECTORS
+# F&O SECTOR MAPPING
 # =========================================================
 
-SECTORS = {
+FNO_SECTORS = {
 
     "BANKING": [
-
         "SBIN",
         "HDFCBANK",
         "ICICIBANK",
@@ -47,55 +42,154 @@ SECTORS = {
         "BANKBARODA",
         "PNB",
         "FEDERALBNK",
-        "AUBANK"
-
+        "AUBANK",
+        "IDFCFIRSTB",
+        "CANBK",
+        "UNIONBANK"
     ],
 
     "IT": [
-
         "INFY",
         "TCS",
         "WIPRO",
         "TECHM",
         "HCLTECH",
         "LTIM",
-        "PERSISTENT"
-
+        "PERSISTENT",
+        "COFORGE",
+        "KPITTECH"
     ],
 
     "POWER": [
-
         "PFC",
         "RECLTD",
         "SUZLON",
         "TATAPOWER",
         "JSWENERGY",
         "NTPC",
-        "NHPC"
-
+        "NHPC",
+        "POWERGRID",
+        "IREDA"
     ],
 
     "INFRA": [
-
         "IRB",
         "LT",
         "RVNL",
         "NBCC",
         "KEC",
-        "PNCINFRA"
-
+        "PNCINFRA",
+        "RAILTEL",
+        "RITES",
+        "IRCON"
     ],
 
     "ENERGY": [
-
         "ONGC",
         "RELIANCE",
         "IOC",
         "BPCL",
         "HINDPETRO",
-        "OIL"
+        "OIL",
+        "GAIL",
+        "IGL"
+    ],
 
+    "AUTO": [
+        "TATAMOTORS",
+        "MARUTI",
+        "M&M",
+        "HEROMOTOCO",
+        "BAJAJ-AUTO",
+        "EICHERMOT",
+        "TVSMOTOR",
+        "ASHOKLEY"
+    ],
+
+    "METAL": [
+        "TATASTEEL",
+        "JSWSTEEL",
+        "HINDALCO",
+        "SAIL",
+        "JINDALSTEL",
+        "VEDL",
+        "NMDC"
+    ],
+
+    "PHARMA": [
+        "SUNPHARMA",
+        "CIPLA",
+        "DIVISLAB",
+        "DRREDDY",
+        "LUPIN",
+        "AUROPHARMA"
+    ],
+
+    "FMCG": [
+        "ITC",
+        "HINDUNILVR",
+        "NESTLEIND",
+        "BRITANNIA",
+        "DABUR",
+        "TATACONSUM"
+    ],
+
+    "FINANCE": [
+        "BAJFINANCE",
+        "JIOFIN",
+        "CHOLAFIN",
+        "SHRIRAMFIN",
+        "SBICARD"
+    ],
+
+    "DEFENCE": [
+        "BEL",
+        "HAL",
+        "BDL",
+        "MAZDOCK",
+        "COCHINSHIP",
+        "BEML"
+    ],
+
+    "REAL_ESTATE": [
+        "DLF",
+        "GODREJPROP",
+        "OBEROIRLTY",
+        "PRESTIGE"
+    ],
+
+    "RETAIL": [
+        "DMART",
+        "TRENT",
+        "ABFRL"
     ]
+}
+
+# =========================================================
+# ALL F&O SYMBOLS
+# =========================================================
+
+ALL_FNO_SYMBOLS = list({
+
+    symbol
+
+    for symbols in FNO_SECTORS.values()
+
+    for symbol in symbols
+
+})
+
+# =========================================================
+# SYMBOL TO SECTOR
+# =========================================================
+
+SYMBOL_TO_SECTOR = {
+
+    symbol: sector
+
+    for sector, symbols in FNO_SECTORS.items()
+
+    for symbol in symbols
 }
 
 # =========================================================
@@ -106,6 +200,7 @@ def safe_float(v):
 
     try:
         return float(str(v).replace(",", ""))
+
     except:
         return 0
 
@@ -114,6 +209,7 @@ def safe_int(v):
 
     try:
         return int(float(str(v).replace(",", "")))
+
     except:
         return 0
 
@@ -168,7 +264,6 @@ def send_telegram(msg):
 
 session = requests.Session()
 
-
 # =========================================================
 # NSE GET
 # =========================================================
@@ -199,77 +294,6 @@ def nse_get(url):
         print("NSE ERROR", e)
 
         return {}
-
-
-# =========================================================
-# FETCH F&O STOCKS
-# =========================================================
-
-def fetch_fno_stocks():
-
-    global FNO_STOCKS
-    global last_fno_refresh
-
-    try:
-
-        today = ist_now().strftime("%Y-%m-%d")
-
-        if last_fno_refresh == today:
-            return
-
-        url = (
-            "https://www.nseindia.com/api/"
-            "market-data-pre-open?"
-            "key=FO"
-        )
-
-        data = nse_get(url)
-
-        if not data:
-            return
-
-        items = data.get("data", [])
-
-        symbols = set()
-
-        for item in items:
-
-            try:
-
-                metadata = item.get(
-                    "metadata",
-                    {}
-                )
-
-                symbol = metadata.get(
-                    "symbol",
-                    ""
-                )
-
-                if symbol:
-                    symbols.add(symbol)
-
-            except:
-                continue
-
-        if symbols:
-
-            FNO_STOCKS = symbols
-
-            last_fno_refresh = today
-
-            print(
-                "Loaded F&O Stocks:",
-                len(FNO_STOCKS)
-            )
-
-    except Exception as e:
-
-        print(
-            "FNO FETCH ERROR",
-            e
-        )
-
 
 # =========================================================
 # NIFTY TREND
@@ -303,7 +327,6 @@ def get_market_trend():
 
     except:
         return 0
-
 
 # =========================================================
 # FETCH STOCK
@@ -351,7 +374,6 @@ def fetch_stock(symbol):
 
         return None
 
-
 # =========================================================
 # SECTOR STRENGTH
 # =========================================================
@@ -362,58 +384,59 @@ def get_sector_strength(symbol):
 
     sector_score = 0
 
-    for sector, stocks in SECTORS.items():
+    sector = SYMBOL_TO_SECTOR.get(symbol)
 
-        if symbol not in stocks:
+    if not sector:
+        return sector_name, sector_score
+
+    stocks = FNO_SECTORS.get(sector, [])
+
+    moves = []
+
+    for s in stocks:
+
+        if s not in latest_market_data:
             continue
 
-        moves = []
+        d = latest_market_data[s]
 
-        for s in stocks:
+        pc = d["prev_close"]
 
-            if s not in latest_market_data:
-                continue
-
-            d = latest_market_data[s]
-
-            pc = d["prev_close"]
-
-            if pc <= 0:
-                continue
-
-            move = (
-                (
-                    d["price"] - pc
-                )
-                / pc
-            ) * 100
-
-            moves.append(move)
-
-        if not moves:
+        if pc <= 0:
             continue
 
-        avg_move = (
-            sum(moves)
-            / len(moves)
-        )
+        move = (
+            (
+                d["price"] - pc
+            )
+            / pc
+        ) * 100
 
-        if avg_move > 0.5:
-            sector_score = 5
+        moves.append(move)
 
-        if avg_move > 1:
-            sector_score = 10
+    if not moves:
+        return sector_name, sector_score
 
-        if avg_move > 2:
-            sector_score = 15
+    avg_move = (
+        sum(moves)
+        / len(moves)
+    )
 
-        sector_name = sector
+    if avg_move > 0.5:
+        sector_score = 5
+
+    if avg_move > 1:
+        sector_score = 10
+
+    if avg_move > 2:
+        sector_score = 15
+
+    sector_name = sector
 
     return (
         sector_name,
         sector_score
     )
-
 
 # =========================================================
 # BULLISH ENGINE
@@ -436,6 +459,10 @@ def process_bullish_setup(
         if prev_close <= 0:
             return
 
+        # =====================================================
+        # PRICE STRENGTH
+        # =====================================================
+
         price_pct = (
             (
                 price - prev_close
@@ -449,11 +476,19 @@ def process_bullish_setup(
         if price_pct > 5:
             return
 
+        # =====================================================
+        # VWAP
+        # =====================================================
+
         above_vwap = (
             vwap > 0
             and
             price > vwap
         )
+
+        # =====================================================
+        # FUTURES OI
+        # =====================================================
 
         oi_change_pct = 0
 
@@ -493,6 +528,10 @@ def process_bullish_setup(
 
         except:
             pass
+
+        # =====================================================
+        # PE WRITING
+        # =====================================================
 
         put_writing = False
 
@@ -545,9 +584,17 @@ def process_bullish_setup(
         except:
             pass
 
+        # =====================================================
+        # SECTOR
+        # =====================================================
+
         sector_name, sector_score = (
             get_sector_strength(symbol)
         )
+
+        # =====================================================
+        # SCORE
+        # =====================================================
 
         score = 20
 
@@ -562,11 +609,19 @@ def process_bullish_setup(
 
         score += sector_score
 
+        # =====================================================
+        # NIFTY BOOST
+        # =====================================================
+
         if market_trend > 0.5:
             score += 10
 
         if market_trend > 1:
             score += 15
+
+        # =====================================================
+        # ALERT FILTER
+        # =====================================================
 
         if score < 70:
             return
@@ -575,16 +630,31 @@ def process_bullish_setup(
             "%Y-%m-%d %H:%M"
         )
 
-        key = f"{symbol}-{candle}"
+        key = (
+            f"{symbol}-{candle}"
+        )
 
         if key in seen_alerts:
             return
 
         seen_alerts.add(key)
 
+        # =====================================================
+        # ICONS
+        # =====================================================
+
         def icon(v):
 
-            return "✅" if v else "❌"
+            return (
+                "✅"
+                if v
+                else
+                "❌"
+            )
+
+        # =====================================================
+        # INTERPRETATION
+        # =====================================================
 
         interpretation = (
 
@@ -596,6 +666,10 @@ def process_bullish_setup(
 
             "🟡 Moderate bullish setup"
         )
+
+        # =====================================================
+        # TELEGRAM MESSAGE
+        # =====================================================
 
         msg = (
 
@@ -628,11 +702,14 @@ def process_bullish_setup(
 
             f"VWAP: ₹{vwap:,.2f}\n"
 
-            f"OI Change: {oi_change_pct:+.2f}%\n"
+            f"OI Change: "
+            f"{oi_change_pct:+.2f}%\n"
 
-            f"PE OI Change: {pe_oi_change:,}\n"
+            f"PE OI Change: "
+            f"{pe_oi_change:,}\n"
 
-            f"Sector Score: {sector_score}\n\n"
+            f"Sector Score: "
+            f"{sector_score}\n\n"
 
             f"<b>CONFIDENCE</b>\n"
 
@@ -646,7 +723,6 @@ def process_bullish_setup(
     except Exception as e:
 
         print(symbol, e)
-
 
 # =========================================================
 # MAIN LOOP
@@ -664,18 +740,6 @@ def run_bot():
                 "Checking bullish setups..."
             )
 
-            fetch_fno_stocks()
-
-            if not FNO_STOCKS:
-
-                print(
-                    "No F&O stocks loaded"
-                )
-
-                time.sleep(60)
-
-                continue
-
             market_trend = (
                 get_market_trend()
             )
@@ -690,7 +754,7 @@ def run_bot():
 
                     executor.map(
                         fetch_stock,
-                        list(FNO_STOCKS)
+                        ALL_FNO_SYMBOLS
                     )
                 )
 
@@ -726,7 +790,6 @@ def run_bot():
             )
 
         time.sleep(300)
-
 
 # =========================================================
 # START
