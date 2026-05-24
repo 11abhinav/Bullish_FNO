@@ -4,7 +4,8 @@ import threading
 import requests
 import pytz
 
-from datetime import datetime
+from datetime import datetime, date
+from datetime import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
 
 # =========================================================
@@ -14,6 +15,12 @@ from concurrent.futures import ThreadPoolExecutor
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 CHAT_ID = os.getenv("CHAT_ID")
+
+PE_OI_MIN_THRESHOLD = 50000
+
+MAX_WORKERS = 15
+
+CYCLE_SECONDS = 300
 
 HEADERS = {
     "User-Agent": (
@@ -30,14 +37,30 @@ HEADERS = {
 }
 
 # =========================================================
+# NSE HOLIDAYS 2026
+# =========================================================
+
+NSE_HOLIDAYS_2026 = {
+
+    date(2026, 1, 26),
+    date(2026, 3, 14),
+    date(2026, 3, 25),
+    date(2026, 4, 2),
+    date(2026, 4, 14),
+    date(2026, 5, 1),
+    date(2026, 8, 15),
+    date(2026, 10, 2),
+    date(2026, 11, 12),
+    date(2026, 12, 25)
+}
+
+# =========================================================
 # GLOBALS
 # =========================================================
 
 seen_alerts = set()
 
 seen_alerts_lock = threading.Lock()
-
-latest_market_data = {}
 
 thread_local = threading.local()
 
@@ -181,7 +204,7 @@ FNO_SECTORS = {
 }
 
 # =========================================================
-# ALL F&O SYMBOLS
+# ALL SYMBOLS
 # =========================================================
 
 ALL_FNO_SYMBOLS = sorted(list({
@@ -195,7 +218,7 @@ ALL_FNO_SYMBOLS = sorted(list({
 }))
 
 # =========================================================
-# SYMBOL TO SECTOR
+# SYMBOL -> SECTOR
 # =========================================================
 
 SYMBOL_TO_SECTOR = {
@@ -254,21 +277,22 @@ def is_market_open():
 
     now = ist_now()
 
-    # Saturday / Sunday
-
     if now.weekday() >= 5:
         return False
 
+    if now.date() in NSE_HOLIDAYS_2026:
+        return False
+
     market_open = now.replace(
-        hour=9,
-        minute=15,
+        hour=8,
+        minute=0,
         second=0,
         microsecond=0
     )
 
     market_close = now.replace(
-        hour=15,
-        minute=30,
+        hour=16,
+        minute=0,
         second=0,
         microsecond=0
     )
@@ -284,16 +308,16 @@ def is_market_open():
 # =========================================================
 
 def get_candle_bucket(
-    dt,
+    dt_obj,
     minutes=5
 ):
 
     bucket = (
-        dt.minute // minutes
+        dt_obj.minute // minutes
     ) * minutes
 
     return (
-        dt.strftime(
+        dt_obj.strftime(
             "%Y-%m-%d %H:"
         )
         + f"{bucket:02d}"
@@ -303,14 +327,19 @@ def get_candle_bucket(
 # TELEGRAM
 # =========================================================
 
-def send_telegram(msg):
+def send_telegram(
+    msg,
+    retry=True
+):
 
     try:
 
         if not BOT_TOKEN or not CHAT_ID:
+
             print(
                 "BOT_TOKEN / CHAT_ID missing"
             )
+
             return
 
         url = (
@@ -327,11 +356,27 @@ def send_telegram(msg):
             "parse_mode": "HTML"
         }
 
-        requests.post(
+        r = requests.post(
             url,
             json=payload,
             timeout=20
         )
+
+        if (
+            r.status_code == 429
+            and retry
+        ):
+
+            print(
+                "Telegram rate limit"
+            )
+
+            time.sleep(2)
+
+            send_telegram(
+                msg,
+                retry=False
+            )
 
     except Exception as e:
 
@@ -341,7 +386,7 @@ def send_telegram(msg):
         )
 
 # =========================================================
-# SESSION MANAGEMENT
+# SESSION
 # =========================================================
 
 def get_session():
@@ -421,12 +466,14 @@ def nse_get(
                 e
             )
 
-        time.sleep(1)
+        if attempt < retries - 1:
+
+            time.sleep(1)
 
     return {}
 
 # =========================================================
-# NIFTY TREND
+# MARKET TREND
 # =========================================================
 
 def get_market_trend():
@@ -458,7 +505,13 @@ def get_market_trend():
             nifty.get("pChange")
         )
 
-    except:
+    except Exception as e:
+
+        print(
+            "NIFTY ERROR:",
+            e
+        )
+
         return 0
 
 # =========================================================
@@ -547,6 +600,9 @@ def fetch_stock(symbol):
         if price_pct > 5:
             return result
 
+        if result["vwap"] <= 0:
+            return result
+
         # =====================================================
         # FUTURES OI
         # =====================================================
@@ -568,9 +624,49 @@ def fetch_stock(symbol):
                 []
             )
 
-            if stocks:
+            futures = [
 
-                md = stocks[0].get(
+                s
+
+                for s in stocks
+
+                if s.get(
+                    "metadata",
+                    {}
+                ).get(
+                    "instrumentType"
+                ) == "Stock Futures"
+            ]
+
+            def parse_expiry(x):
+
+                try:
+
+                    return dt.strptime(
+
+                        x.get(
+                            "metadata",
+                            {}
+                        ).get(
+                            "expiryDate",
+                            ""
+                        ),
+
+                        "%d-%b-%Y"
+                    )
+
+                except:
+
+                    return dt.max
+
+            futures = sorted(
+                futures,
+                key=parse_expiry
+            )
+
+            if futures:
+
+                md = futures[0].get(
                     "metadata",
                     {}
                 )
@@ -589,8 +685,12 @@ def fetch_stock(symbol):
                     oi_change_pct > 5
                 )
 
-        except:
-            pass
+        except Exception as e:
+
+            print(
+                f"{symbol} OI ERROR:",
+                e
+            )
 
         # =====================================================
         # OPTION CHAIN
@@ -620,25 +720,40 @@ def fetch_stock(symbol):
 
             total = 0
 
-            atm_rows = [
+            atm_rows = sorted(
 
-                item
+                [
 
-                for item in rows
+                    item
 
-                if abs(
+                    for item in rows
+
+                    if abs(
+
+                        safe_float(
+                            item.get(
+                                "strikePrice",
+                                0
+                            )
+                        )
+
+                        - price
+
+                    ) < price * 0.03
+                ],
+
+                key=lambda x: abs(
 
                     safe_float(
-                        item.get(
+                        x.get(
                             "strikePrice",
                             0
                         )
                     )
 
                     - price
-
-                ) < price * 0.03
-            ]
+                )
+            )
 
             for item in atm_rows[:5]:
 
@@ -662,11 +777,15 @@ def fetch_stock(symbol):
             result["pe_oi_change"] = total
 
             result["put_writing"] = (
-                total > 0
+                total > PE_OI_MIN_THRESHOLD
             )
 
-        except:
-            pass
+        except Exception as e:
+
+            print(
+                f"{symbol} OPTION ERROR:",
+                e
+            )
 
         return result
 
@@ -749,12 +868,15 @@ def get_sector_strength(
     )
 
     if avg_move > 2:
+
         sector_score = 15
 
     elif avg_move > 1:
+
         sector_score = 10
 
     elif avg_move > 0.5:
+
         sector_score = 5
 
     sector_name = sector
@@ -820,10 +942,6 @@ def process_bullish_setup(
         if prev_close <= 0:
             return
 
-        # =====================================================
-        # FILTER
-        # =====================================================
-
         if price_pct < 1:
             return
 
@@ -858,12 +976,15 @@ def process_bullish_setup(
         score = 0
 
         if price_pct >= 3:
+
             score += 25
 
         elif price_pct >= 2:
+
             score += 20
 
         elif price_pct >= 1:
+
             score += 15
 
         if above_vwap:
@@ -878,15 +999,17 @@ def process_bullish_setup(
         score += sector_score
 
         if market_trend > 1:
+
             score += 15
 
         elif market_trend > 0.5:
+
             score += 10
 
         score = min(score, 100)
 
         # =====================================================
-        # MIN SCORE
+        # FILTER
         # =====================================================
 
         if score < 70:
@@ -922,7 +1045,7 @@ def process_bullish_setup(
             )
 
         # =====================================================
-        # INTERPRETATION
+        # MESSAGE
         # =====================================================
 
         interpretation = (
@@ -936,19 +1059,13 @@ def process_bullish_setup(
             "🟡 Moderate bullish setup"
         )
 
-        # =====================================================
-        # MESSAGE
-        # =====================================================
-
         msg = (
 
             f"🔥 <b>BULLISH SETUP</b>\n\n"
 
-            f"<b>Stock:</b> "
-            f"{symbol}\n"
+            f"<b>Stock:</b> {symbol}\n"
 
-            f"<b>Price:</b> "
-            f"₹{price:,.2f}\n"
+            f"<b>Price:</b> ₹{price:,.2f}\n"
 
             f"<b>Change:</b> "
             f"{price_pct:+.2f}%\n\n"
@@ -971,8 +1088,7 @@ def process_bullish_setup(
 
             f"<b>DETAILS</b>\n"
 
-            f"VWAP: "
-            f"₹{vwap:,.2f}\n"
+            f"VWAP: ₹{vwap:,.2f}\n"
 
             f"OI Change: "
             f"{oi_change_pct:+.2f}%\n"
@@ -1006,8 +1122,6 @@ def process_bullish_setup(
 
 def run_bot():
 
-    global latest_market_data
-
     last_cleared = None
 
     while True:
@@ -1040,7 +1154,7 @@ def run_bot():
                     "Market closed..."
                 )
 
-                time.sleep(60)
+                time.sleep(300)
 
                 continue
 
@@ -1063,7 +1177,7 @@ def run_bot():
             all_data = {}
 
             with ThreadPoolExecutor(
-                max_workers=15
+                max_workers=MAX_WORKERS
             ) as executor:
 
                 results = list(
@@ -1083,8 +1197,6 @@ def run_bot():
                     r["symbol"]
                 ] = r
 
-            latest_market_data = all_data
-
             snapshot = dict(all_data)
 
             # =================================================
@@ -1100,6 +1212,10 @@ def run_bot():
                     snapshot
                 )
 
+                # Avoid Telegram burst limits
+
+                time.sleep(0.5)
+
             print(
                 "Cycle complete:",
                 datetime.now()
@@ -1113,7 +1229,7 @@ def run_bot():
             )
 
         # =====================================================
-        # FIXED 5 MIN CADENCE
+        # EXACT 5 MIN CYCLE
         # =====================================================
 
         elapsed = (
@@ -1123,11 +1239,12 @@ def run_bot():
 
         sleep_time = max(
             0,
-            300 - elapsed
+            CYCLE_SECONDS - elapsed
         )
 
         print(
-            f"Sleeping {sleep_time:.2f}s"
+            f"Sleeping "
+            f"{sleep_time:.2f}s"
         )
 
         time.sleep(sleep_time)
