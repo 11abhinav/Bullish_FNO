@@ -1,5 +1,6 @@
 import os
 import time
+import threading
 import requests
 import pytz
 
@@ -15,7 +16,17 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": (
+        "Mozilla/5.0 "
+        "(Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nseindia.com/",
+    "Connection": "keep-alive"
 }
 
 # =========================================================
@@ -24,7 +35,11 @@ HEADERS = {
 
 seen_alerts = set()
 
+seen_alerts_lock = threading.Lock()
+
 latest_market_data = {}
+
+thread_local = threading.local()
 
 # =========================================================
 # F&O SECTOR MAPPING
@@ -169,7 +184,7 @@ FNO_SECTORS = {
 # ALL F&O SYMBOLS
 # =========================================================
 
-ALL_FNO_SYMBOLS = list({
+ALL_FNO_SYMBOLS = sorted(list({
 
     symbol
 
@@ -177,7 +192,7 @@ ALL_FNO_SYMBOLS = list({
 
     for symbol in symbols
 
-})
+}))
 
 # =========================================================
 # SYMBOL TO SECTOR
@@ -199,20 +214,25 @@ SYMBOL_TO_SECTOR = {
 def safe_float(v):
 
     try:
-        return float(str(v).replace(",", ""))
+        return float(
+            str(v).replace(",", "")
+        )
 
     except:
-        return 0
+        return 0.0
 
 
 def safe_int(v):
 
     try:
-        return int(float(str(v).replace(",", "")))
+        return int(
+            float(
+                str(v).replace(",", "")
+            )
+        )
 
     except:
         return 0
-
 
 # =========================================================
 # TIME
@@ -220,10 +240,64 @@ def safe_int(v):
 
 def ist_now():
 
-    tz = pytz.timezone("Asia/Kolkata")
+    tz = pytz.timezone(
+        "Asia/Kolkata"
+    )
 
     return datetime.now(tz)
 
+# =========================================================
+# MARKET HOURS
+# =========================================================
+
+def is_market_open():
+
+    now = ist_now()
+
+    # Saturday / Sunday
+
+    if now.weekday() >= 5:
+        return False
+
+    market_open = now.replace(
+        hour=9,
+        minute=15,
+        second=0,
+        microsecond=0
+    )
+
+    market_close = now.replace(
+        hour=15,
+        minute=30,
+        second=0,
+        microsecond=0
+    )
+
+    return (
+        market_open
+        <= now
+        <= market_close
+    )
+
+# =========================================================
+# 5 MIN BUCKET
+# =========================================================
+
+def get_candle_bucket(
+    dt,
+    minutes=5
+):
+
+    bucket = (
+        dt.minute // minutes
+    ) * minutes
+
+    return (
+        dt.strftime(
+            "%Y-%m-%d %H:"
+        )
+        + f"{bucket:02d}"
+    )
 
 # =========================================================
 # TELEGRAM
@@ -232,6 +306,12 @@ def ist_now():
 def send_telegram(msg):
 
     try:
+
+        if not BOT_TOKEN or not CHAT_ID:
+            print(
+                "BOT_TOKEN / CHAT_ID missing"
+            )
+            return
 
         url = (
             f"https://api.telegram.org/"
@@ -250,50 +330,100 @@ def send_telegram(msg):
         requests.post(
             url,
             json=payload,
-            timeout=15
+            timeout=20
         )
 
     except Exception as e:
 
-        print("Telegram Error", e)
-
+        print(
+            "Telegram Error:",
+            e
+        )
 
 # =========================================================
-# NSE SESSION
+# SESSION MANAGEMENT
 # =========================================================
 
-session = requests.Session()
+def get_session():
+
+    now = time.time()
+
+    if (
+
+        not hasattr(
+            thread_local,
+            "session"
+        )
+
+        or
+
+        now - getattr(
+            thread_local,
+            "session_created",
+            0
+        ) > 3600
+    ):
+
+        s = requests.Session()
+
+        s.get(
+            "https://www.nseindia.com",
+            headers=HEADERS,
+            timeout=15
+        )
+
+        thread_local.session = s
+
+        thread_local.session_created = now
+
+    return thread_local.session
 
 # =========================================================
 # NSE GET
 # =========================================================
 
-def nse_get(url):
+def nse_get(
+    url,
+    retries=2
+):
 
-    try:
+    for attempt in range(retries):
 
-        session.get(
-            "https://www.nseindia.com",
-            headers=HEADERS,
-            timeout=10
-        )
+        try:
 
-        r = session.get(
-            url,
-            headers=HEADERS,
-            timeout=20
-        )
+            session = get_session()
 
-        if r.status_code != 200:
-            return {}
+            r = session.get(
+                url,
+                headers=HEADERS,
+                timeout=20
+            )
 
-        return r.json()
+            if r.status_code == 200:
 
-    except Exception as e:
+                return r.json()
 
-        print("NSE ERROR", e)
+            if r.status_code in (
+                401,
+                403
+            ):
 
-        return {}
+                thread_local.session_created = 0
+
+            if r.status_code == 429:
+
+                time.sleep(2)
+
+        except Exception as e:
+
+            print(
+                "NSE ERROR:",
+                e
+            )
+
+        time.sleep(1)
+
+    return {}
 
 # =========================================================
 # NIFTY TREND
@@ -314,7 +444,10 @@ def get_market_trend():
         if not data:
             return 0
 
-        items = data.get("data", [])
+        items = data.get(
+            "data",
+            []
+        )
 
         if not items:
             return 0
@@ -336,41 +469,214 @@ def fetch_stock(symbol):
 
     try:
 
-        url = (
+        result = {
+
+            "symbol": symbol,
+
+            "price": 0,
+            "prev_close": 0,
+            "vwap": 0,
+
+            "price_pct": 0,
+
+            "oi_change_pct": 0,
+            "oi_strength": False,
+
+            "put_writing": False,
+            "pe_oi_change": 0
+        }
+
+        # =====================================================
+        # EQUITY
+        # =====================================================
+
+        eq_url = (
             "https://www.nseindia.com/api/"
             f"quote-equity?symbol={symbol}"
         )
 
-        data = nse_get(url)
+        eq_data = nse_get(eq_url)
 
-        if not data:
+        if not eq_data:
             return None
 
-        p = data.get(
+        p = eq_data.get(
             "priceInfo",
             {}
         )
 
-        return {
+        result["price"] = safe_float(
+            p.get("lastPrice")
+        )
 
-            "symbol": symbol,
+        result["prev_close"] = safe_float(
+            p.get("previousClose")
+        )
 
-            "price": safe_float(
-                p.get("lastPrice")
-            ),
+        result["vwap"] = safe_float(
+            p.get("vwap")
+        )
 
-            "prev_close": safe_float(
-                p.get("previousClose")
-            ),
+        price = result["price"]
 
-            "vwap": safe_float(
-                p.get("vwap")
+        prev_close = result["prev_close"]
+
+        if prev_close <= 0:
+            return result
+
+        # =====================================================
+        # PRICE %
+        # =====================================================
+
+        price_pct = (
+            (
+                price - prev_close
             )
-        }
+            / prev_close
+        ) * 100
+
+        result["price_pct"] = price_pct
+
+        # =====================================================
+        # EARLY FILTER
+        # =====================================================
+
+        if price_pct < 1:
+            return result
+
+        if price_pct > 5:
+            return result
+
+        # =====================================================
+        # FUTURES OI
+        # =====================================================
+
+        try:
+
+            oi_url = (
+                "https://www.nseindia.com/api/"
+                f"quote-derivative?"
+                f"symbol={symbol}"
+            )
+
+            oi_data = nse_get(
+                oi_url
+            )
+
+            stocks = oi_data.get(
+                "stocks",
+                []
+            )
+
+            if stocks:
+
+                md = stocks[0].get(
+                    "metadata",
+                    {}
+                )
+
+                oi_change_pct = safe_float(
+                    md.get(
+                        "pChangeinOpenInterest"
+                    )
+                )
+
+                result["oi_change_pct"] = (
+                    oi_change_pct
+                )
+
+                result["oi_strength"] = (
+                    oi_change_pct > 5
+                )
+
+        except:
+            pass
+
+        # =====================================================
+        # OPTION CHAIN
+        # =====================================================
+
+        try:
+
+            option_url = (
+                "https://www.nseindia.com/api/"
+                f"option-chain-equities?"
+                f"symbol={symbol}"
+            )
+
+            option_data = nse_get(
+                option_url
+            )
+
+            records = option_data.get(
+                "records",
+                {}
+            )
+
+            rows = records.get(
+                "data",
+                []
+            )
+
+            total = 0
+
+            atm_rows = [
+
+                item
+
+                for item in rows
+
+                if abs(
+
+                    safe_float(
+                        item.get(
+                            "strikePrice",
+                            0
+                        )
+                    )
+
+                    - price
+
+                ) < price * 0.03
+            ]
+
+            for item in atm_rows[:5]:
+
+                if not isinstance(
+                    item,
+                    dict
+                ):
+                    continue
+
+                pe = item.get("PE")
+
+                if not pe:
+                    continue
+
+                total += safe_int(
+                    pe.get(
+                        "changeinOpenInterest"
+                    )
+                )
+
+            result["pe_oi_change"] = total
+
+            result["put_writing"] = (
+                total > 0
+            )
+
+        except:
+            pass
+
+        return result
 
     except Exception as e:
 
-        print(symbol, e)
+        print(
+            symbol,
+            "FETCH ERROR:",
+            e
+        )
 
         return None
 
@@ -378,36 +684,52 @@ def fetch_stock(symbol):
 # SECTOR STRENGTH
 # =========================================================
 
-def get_sector_strength(symbol):
+def get_sector_strength(
+    symbol,
+    market_data
+):
 
     sector_name = "UNKNOWN"
 
     sector_score = 0
 
-    sector = SYMBOL_TO_SECTOR.get(symbol)
+    sector = SYMBOL_TO_SECTOR.get(
+        symbol
+    )
 
     if not sector:
-        return sector_name, sector_score
 
-    stocks = FNO_SECTORS.get(sector, [])
+        return (
+            sector_name,
+            sector_score
+        )
+
+    stocks = FNO_SECTORS.get(
+        sector,
+        []
+    )
 
     moves = []
 
     for s in stocks:
 
-        if s not in latest_market_data:
+        if s not in market_data:
             continue
 
-        d = latest_market_data[s]
+        d = market_data[s]
 
-        pc = d["prev_close"]
+        pc = d.get(
+            "prev_close",
+            0
+        )
 
         if pc <= 0:
             continue
 
         move = (
             (
-                d["price"] - pc
+                d.get("price", 0)
+                - pc
             )
             / pc
         ) * 100
@@ -415,21 +737,25 @@ def get_sector_strength(symbol):
         moves.append(move)
 
     if not moves:
-        return sector_name, sector_score
+
+        return (
+            sector_name,
+            sector_score
+        )
 
     avg_move = (
         sum(moves)
         / len(moves)
     )
 
-    if avg_move > 0.5:
-        sector_score = 5
-
-    if avg_move > 1:
-        sector_score = 10
-
     if avg_move > 2:
         sector_score = 15
+
+    elif avg_move > 1:
+        sector_score = 10
+
+    elif avg_move > 0.5:
+        sector_score = 5
 
     sector_name = sector
 
@@ -445,30 +771,58 @@ def get_sector_strength(symbol):
 def process_bullish_setup(
     symbol,
     stock,
-    market_trend
+    market_trend,
+    market_data
 ):
 
     try:
 
-        price = stock["price"]
+        price = stock.get(
+            "price",
+            0
+        )
 
-        prev_close = stock["prev_close"]
+        prev_close = stock.get(
+            "prev_close",
+            0
+        )
 
-        vwap = stock["vwap"]
+        vwap = stock.get(
+            "vwap",
+            0
+        )
+
+        price_pct = stock.get(
+            "price_pct",
+            0
+        )
+
+        oi_change_pct = stock.get(
+            "oi_change_pct",
+            0
+        )
+
+        oi_strength = stock.get(
+            "oi_strength",
+            False
+        )
+
+        put_writing = stock.get(
+            "put_writing",
+            False
+        )
+
+        pe_oi_change = stock.get(
+            "pe_oi_change",
+            0
+        )
 
         if prev_close <= 0:
             return
 
         # =====================================================
-        # PRICE STRENGTH
+        # FILTER
         # =====================================================
-
-        price_pct = (
-            (
-                price - prev_close
-            )
-            / prev_close
-        ) * 100
 
         if price_pct < 1:
             return
@@ -487,116 +841,30 @@ def process_bullish_setup(
         )
 
         # =====================================================
-        # FUTURES OI
-        # =====================================================
-
-        oi_change_pct = 0
-
-        oi_strength = False
-
-        try:
-
-            url = (
-                "https://www.nseindia.com/api/"
-                f"quote-derivative?"
-                f"symbol={symbol}"
-            )
-
-            data = nse_get(url)
-
-            stocks = data.get(
-                "stocks",
-                []
-            )
-
-            if stocks:
-
-                md = stocks[0].get(
-                    "metadata",
-                    {}
-                )
-
-                oi_change_pct = safe_float(
-                    md.get(
-                        "pChangeinOpenInterest"
-                    )
-                )
-
-                oi_strength = (
-                    oi_change_pct > 5
-                )
-
-        except:
-            pass
-
-        # =====================================================
-        # PE WRITING
-        # =====================================================
-
-        put_writing = False
-
-        pe_oi_change = 0
-
-        try:
-
-            url = (
-                "https://www.nseindia.com/api/"
-                f"option-chain-equities?"
-                f"symbol={symbol}"
-            )
-
-            data = nse_get(url)
-
-            records = data.get(
-                "records",
-                {}
-            )
-
-            rows = records.get(
-                "data",
-                []
-            )
-
-            total = 0
-
-            for item in rows[:5]:
-
-                if not isinstance(item, dict):
-                    continue
-
-                pe = item.get("PE")
-
-                if not pe:
-                    continue
-
-                total += safe_int(
-                    pe.get(
-                        "changeinOpenInterest"
-                    )
-                )
-
-            pe_oi_change = total
-
-            put_writing = (
-                total > 0
-            )
-
-        except:
-            pass
-
-        # =====================================================
         # SECTOR
         # =====================================================
 
         sector_name, sector_score = (
-            get_sector_strength(symbol)
+            get_sector_strength(
+                symbol,
+                market_data
+            )
         )
 
         # =====================================================
         # SCORE
         # =====================================================
 
-        score = 20
+        score = 0
+
+        if price_pct >= 3:
+            score += 25
+
+        elif price_pct >= 2:
+            score += 20
+
+        elif price_pct >= 1:
+            score += 15
 
         if above_vwap:
             score += 20
@@ -609,38 +877,39 @@ def process_bullish_setup(
 
         score += sector_score
 
-        # =====================================================
-        # NIFTY BOOST
-        # =====================================================
-
-        if market_trend > 0.5:
-            score += 10
-
         if market_trend > 1:
             score += 15
 
+        elif market_trend > 0.5:
+            score += 10
+
+        score = min(score, 100)
+
         # =====================================================
-        # ALERT FILTER
+        # MIN SCORE
         # =====================================================
 
         if score < 70:
             return
 
-        candle = ist_now().strftime(
-            "%Y-%m-%d %H:%M"
-        )
+        # =====================================================
+        # DUPLICATE FILTER
+        # =====================================================
 
         key = (
-            f"{symbol}-{candle}"
+            f"{symbol}-"
+            f"{get_candle_bucket(ist_now())}"
         )
 
-        if key in seen_alerts:
-            return
+        with seen_alerts_lock:
 
-        seen_alerts.add(key)
+            if key in seen_alerts:
+                return
+
+            seen_alerts.add(key)
 
         # =====================================================
-        # ICONS
+        # ICON
         # =====================================================
 
         def icon(v):
@@ -668,16 +937,18 @@ def process_bullish_setup(
         )
 
         # =====================================================
-        # TELEGRAM MESSAGE
+        # MESSAGE
         # =====================================================
 
         msg = (
 
             f"🔥 <b>BULLISH SETUP</b>\n\n"
 
-            f"<b>Stock:</b> {symbol}\n"
+            f"<b>Stock:</b> "
+            f"{symbol}\n"
 
-            f"<b>Price:</b> ₹{price:,.2f}\n"
+            f"<b>Price:</b> "
+            f"₹{price:,.2f}\n"
 
             f"<b>Change:</b> "
             f"{price_pct:+.2f}%\n\n"
@@ -700,7 +971,8 @@ def process_bullish_setup(
 
             f"<b>DETAILS</b>\n"
 
-            f"VWAP: ₹{vwap:,.2f}\n"
+            f"VWAP: "
+            f"₹{vwap:,.2f}\n"
 
             f"OI Change: "
             f"{oi_change_pct:+.2f}%\n"
@@ -722,7 +994,11 @@ def process_bullish_setup(
 
     except Exception as e:
 
-        print(symbol, e)
+        print(
+            symbol,
+            "PROCESS ERROR:",
+            e
+        )
 
 # =========================================================
 # MAIN LOOP
@@ -732,22 +1008,62 @@ def run_bot():
 
     global latest_market_data
 
+    last_cleared = None
+
     while True:
 
+        cycle_start = time.time()
+
+        today = ist_now().date()
+
+        if last_cleared != today:
+
+            with seen_alerts_lock:
+
+                seen_alerts.clear()
+
+            last_cleared = today
+
+            print(
+                "Cleared old alerts"
+            )
+
         try:
+
+            # =================================================
+            # MARKET HOURS
+            # =================================================
+
+            if not is_market_open():
+
+                print(
+                    "Market closed..."
+                )
+
+                time.sleep(60)
+
+                continue
 
             print(
                 "Checking bullish setups..."
             )
 
+            # =================================================
+            # MARKET TREND
+            # =================================================
+
             market_trend = (
                 get_market_trend()
             )
 
+            # =================================================
+            # FETCH DATA
+            # =================================================
+
             all_data = {}
 
             with ThreadPoolExecutor(
-                max_workers=5
+                max_workers=15
             ) as executor:
 
                 results = list(
@@ -769,27 +1085,52 @@ def run_bot():
 
             latest_market_data = all_data
 
-            for symbol, stock in all_data.items():
+            snapshot = dict(all_data)
+
+            # =================================================
+            # PROCESS ALERTS
+            # =================================================
+
+            for symbol, stock in snapshot.items():
 
                 process_bullish_setup(
                     symbol,
                     stock,
-                    market_trend
+                    market_trend,
+                    snapshot
                 )
 
             print(
-                "Cycle complete",
+                "Cycle complete:",
                 datetime.now()
             )
 
         except Exception as e:
 
             print(
-                "MAIN LOOP ERROR",
+                "MAIN LOOP ERROR:",
                 e
             )
 
-        time.sleep(300)
+        # =====================================================
+        # FIXED 5 MIN CADENCE
+        # =====================================================
+
+        elapsed = (
+            time.time()
+            - cycle_start
+        )
+
+        sleep_time = max(
+            0,
+            300 - elapsed
+        )
+
+        print(
+            f"Sleeping {sleep_time:.2f}s"
+        )
+
+        time.sleep(sleep_time)
 
 # =========================================================
 # START
