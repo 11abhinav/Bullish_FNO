@@ -5,7 +5,6 @@ import requests
 import pytz
 
 from datetime import datetime, date
-from datetime import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
 
 # =========================================================
@@ -42,16 +41,16 @@ HEADERS = {
 
 NSE_HOLIDAYS_2026 = {
 
-    date(2026, 1, 26),
-    date(2026, 3, 14),
-    date(2026, 3, 25),
-    date(2026, 4, 2),
-    date(2026, 4, 14),
-    date(2026, 5, 1),
-    date(2026, 8, 15),
-    date(2026, 10, 2),
-    date(2026, 11, 12),
-    date(2026, 12, 25)
+    date(2026, 1, 26),   # Republic Day
+    date(2026, 3, 14),   # Holi
+    date(2026, 3, 25),   # Ram Navami
+    date(2026, 4, 2),    # Mahavir Jayanti
+    date(2026, 4, 14),   # Ambedkar Jayanti / Dr. Babasaheb
+    date(2026, 5, 1),    # Maharashtra Day
+    date(2026, 8, 15),   # Independence Day
+    date(2026, 10, 2),   # Gandhi Jayanti
+    date(2026, 11, 12),  # Diwali Laxmi Pujan
+    date(2026, 12, 25)   # Christmas
 }
 
 # =========================================================
@@ -65,10 +64,14 @@ seen_alerts_lock = threading.Lock()
 thread_local = threading.local()
 
 # =========================================================
-# F&O SECTOR MAPPING
+# F&O SECTOR MAPPING — FULL NSE F&O UNIVERSE
 # =========================================================
 
 FNO_SECTORS = {
+
+    # =====================================================
+    # BANKING
+    # =====================================================
 
     "BANKING": [
         "SBIN",
@@ -83,8 +86,23 @@ FNO_SECTORS = {
         "AUBANK",
         "IDFCFIRSTB",
         "CANBK",
-        "UNIONBANK"
+        "UNIONBANK",
+        "BANDHANBNK",
+        "INDIANB",
+        "IOB",
+        "MAHABANK",
+        "UCOBANK",
+        "CENTRALBK",
+        "J&KBANK",
+        "DCBBANK",
+        "RBLBANK",
+        "KARURVYSYA",
+        "CSBBANK",
     ],
+
+    # =====================================================
+    # IT
+    # =====================================================
 
     "IT": [
         "INFY",
@@ -95,8 +113,22 @@ FNO_SECTORS = {
         "LTIM",
         "PERSISTENT",
         "COFORGE",
-        "KPITTECH"
+        "KPITTECH",
+        "MPHASIS",
+        "LTTS",
+        "OFSS",
+        "TATAELXSI",
+        "CYIENT",
+        "MASTEK",
+        "ZENSAR",
+        "BIRLASOFT",
+        "NIITLTD",
+        "HEXAWARE",
     ],
+
+    # =====================================================
+    # POWER
+    # =====================================================
 
     "POWER": [
         "PFC",
@@ -107,20 +139,46 @@ FNO_SECTORS = {
         "NTPC",
         "NHPC",
         "POWERGRID",
-        "IREDA"
+        "IREDA",
+        "SJVN",
+        "CESC",
+        "TORNTPOWER",
+        "RPOWER",
+        "ADANIPOWER",
+        "ADANIGREEN",
+        "ADANIENSOL",
+        "INOXWIND",
+        "GREENKO",
     ],
 
+    # =====================================================
+    # INFRA
+    # =====================================================
+
     "INFRA": [
-        "IRB",
         "LT",
+        "IRB",
         "RVNL",
         "NBCC",
         "KEC",
         "PNCINFRA",
         "RAILTEL",
         "RITES",
-        "IRCON"
+        "IRCON",
+        "NCC",
+        "HGINFRA",
+        "KNRCON",
+        "ASHOKA",
+        "GMRAIRPORT",
+        "TITAGARH",
+        "TEXRAIL",
+        "APLAPOLLO",
+        "GPPL",
     ],
+
+    # =====================================================
+    # ENERGY / OIL & GAS
+    # =====================================================
 
     "ENERGY": [
         "ONGC",
@@ -130,8 +188,19 @@ FNO_SECTORS = {
         "HINDPETRO",
         "OIL",
         "GAIL",
-        "IGL"
+        "IGL",
+        "MGL",
+        "PETRONET",
+        "GUJGASLTD",
+        "GSPL",
+        "CPCL",
+        "MRPL",
+        "AEGISCHEM",
     ],
+
+    # =====================================================
+    # AUTO & AUTO ANCILLARIES
+    # =====================================================
 
     "AUTO": [
         "TATAMOTORS",
@@ -141,8 +210,26 @@ FNO_SECTORS = {
         "BAJAJ-AUTO",
         "EICHERMOT",
         "TVSMOTOR",
-        "ASHOKLEY"
+        "ASHOKLEY",
+        "MOTHERSON",
+        "BALKRISIND",
+        "BOSCHLTD",
+        "MRF",
+        "BHARATFORG",
+        "APOLLOTYRE",
+        "CEATLTD",
+        "EXIDEIND",
+        "AMARAJABAT",
+        "TIINDIA",
+        "ENDURANCE",
+        "SUNDRMFAST",
+        "CRAFTSMAN",
+        "SUPRAJIT",
     ],
+
+    # =====================================================
+    # METAL & MINING
+    # =====================================================
 
     "METAL": [
         "TATASTEEL",
@@ -151,8 +238,21 @@ FNO_SECTORS = {
         "SAIL",
         "JINDALSTEL",
         "VEDL",
-        "NMDC"
+        "NMDC",
+        "NATIONALUM",
+        "HINDCOPPER",
+        "JSPL",
+        "WELCORP",
+        "RATNAMANI",
+        "MOIL",
+        "GMDC",
+        "APL",
+        "MIDHANI",
     ],
+
+    # =====================================================
+    # PHARMA & HEALTHCARE
+    # =====================================================
 
     "PHARMA": [
         "SUNPHARMA",
@@ -160,8 +260,28 @@ FNO_SECTORS = {
         "DIVISLAB",
         "DRREDDY",
         "LUPIN",
-        "AUROPHARMA"
+        "AUROPHARMA",
+        "TORNTPHARM",
+        "ALKEM",
+        "IPCALAB",
+        "GLENMARK",
+        "BIOCON",
+        "ABBOTINDIA",
+        "PFIZER",
+        "SANOFI",
+        "GLAXO",
+        "AJANTPHARM",
+        "LAURUSLABS",
+        "GRANULES",
+        "NATCOPHARM",
+        "ZYDUSLIFE",
+        "MANKIND",
+        "JBCHEPHARM",
     ],
+
+    # =====================================================
+    # FMCG
+    # =====================================================
 
     "FMCG": [
         "ITC",
@@ -169,16 +289,67 @@ FNO_SECTORS = {
         "NESTLEIND",
         "BRITANNIA",
         "DABUR",
-        "TATACONSUM"
+        "TATACONSUM",
+        "COLPAL",
+        "MARICO",
+        "GODREJCP",
+        "EMAMILTD",
+        "VBL",
+        "UBL",
+        "RADICO",
+        "MCDOWELL-N",
+        "PATANJALI",
+        "BIKAJI",
+        "DEVYANI",
+        "WESTLIFE",
     ],
+
+    # =====================================================
+    # FINANCE — NBFC, MFI, HOUSING
+    # =====================================================
 
     "FINANCE": [
         "BAJFINANCE",
+        "BAJAJFINSV",
         "JIOFIN",
         "CHOLAFIN",
         "SHRIRAMFIN",
-        "SBICARD"
+        "SBICARD",
+        "MUTHOOTFIN",
+        "MANAPPURAM",
+        "LICHSGFIN",
+        "SUNDARMFIN",
+        "M&MFIN",
+        "POONAWALLA",
+        "CREDITACC",
+        "AAVAS",
+        "HOMEFIRST",
+        "MASFIN",
+        "PEL",
+        "CANFINHOME",
+        "REPCO",
+        "UGROCAP",
     ],
+
+    # =====================================================
+    # INSURANCE
+    # =====================================================
+
+    "INSURANCE": [
+        "HDFCLIFE",
+        "SBILIFE",
+        "ICICIPRULI",
+        "ICICIGI",
+        "NIACL",
+        "GICRE",
+        "STARHEALTH",
+        "LICI",
+        "MAXFINSERV",
+    ],
+
+    # =====================================================
+    # DEFENCE
+    # =====================================================
 
     "DEFENCE": [
         "BEL",
@@ -186,25 +357,263 @@ FNO_SECTORS = {
         "BDL",
         "MAZDOCK",
         "COCHINSHIP",
-        "BEML"
+        "BEML",
+        "GRSE",
+        "PARAS",
+        "DATAPATTNS",
+        "ASTRA",
+        "HSCL",
     ],
+
+    # =====================================================
+    # CEMENT
+    # =====================================================
+
+    "CEMENT": [
+        "ULTRACEMCO",
+        "AMBUJACEM",
+        "ACC",
+        "SHREECEM",
+        "JKCEMENT",
+        "RAMCOCEM",
+        "HEIDELBERG",
+        "BIRLACORPN",
+        "ORIENTCEM",
+        "DALMIACEM",
+        "NUVOCO",
+        "STARCEMENT",
+    ],
+
+    # =====================================================
+    # CHEMICALS & AGRO CHEMICALS
+    # =====================================================
+
+    "CHEMICALS": [
+        "PIDILITIND",
+        "AARTIIND",
+        "DEEPAKNTR",
+        "NAVINFLUOR",
+        "FINEORG",
+        "GALAXYSURF",
+        "ATUL",
+        "SUMICHEM",
+        "TATACHEM",
+        "GNFC",
+        "GSFC",
+        "CHAMBAL",
+        "COROMANDEL",
+        "RALLIS",
+        "BAYERCROP",
+        "VINATIORGA",
+        "ALKYLAMINE",
+        "CLEAN",
+        "JUBILANT",
+        "PIIND",
+    ],
+
+    # =====================================================
+    # TELECOM
+    # =====================================================
+
+    "TELECOM": [
+        "BHARTIARTL",
+        "IDEA",
+        "TATACOMM",
+        "HFCL",
+        "TEJASNET",
+        "STLTECH",
+        "ROUTE",
+    ],
+
+    # =====================================================
+    # CONSUMER DURABLES & ELECTRICALS
+    # =====================================================
+
+    "CONSUMER_DURABLES": [
+        "HAVELLS",
+        "VOLTAS",
+        "WHIRLPOOL",
+        "BLUESTAR",
+        "CROMPTON",
+        "ORIENTELEC",
+        "BAJAJELEC",
+        "AMBER",
+        "DIXON",
+        "KAJARIACER",
+        "CERA",
+        "SYMPHONY",
+        "VGUARD",
+        "POLYCAB",
+        "KEI",
+    ],
+
+    # =====================================================
+    # REAL ESTATE
+    # =====================================================
 
     "REAL_ESTATE": [
         "DLF",
         "GODREJPROP",
         "OBEROIRLTY",
-        "PRESTIGE"
+        "PRESTIGE",
+        "BRIGADE",
+        "SOBHA",
+        "PHOENIXLTD",
+        "MAHLIFE",
+        "KOLTEPATIL",
+        "LODHA",
+        "SUNTECK",
+        "SIGNATURE",
     ],
+
+    # =====================================================
+    # AVIATION & HOSPITALITY
+    # =====================================================
+
+    "AVIATION_HOSPITALITY": [
+        "INDIGO",
+        "IRCTC",
+        "SPICEJET",
+        "THOMASCOOK",
+        "LEMONTREE",
+        "EIHOTEL",
+        "CHALET",
+    ],
+
+    # =====================================================
+    # MEDIA & ENTERTAINMENT
+    # =====================================================
+
+    "MEDIA": [
+        "ZEEL",
+        "PVRINOX",
+        "SUNTV",
+        "NAZARA",
+        "NETWORK18",
+        "TV18BRDCST",
+        "SAREGAMA",
+    ],
+
+    # =====================================================
+    # HOSPITALS
+    # =====================================================
+
+    "HOSPITALS": [
+        "APOLLOHOSP",
+        "FORTIS",
+        "MAXHEALTH",
+        "NH",
+        "KIMS",
+        "RAINBOW",
+        "YATHARTH",
+    ],
+
+    # =====================================================
+    # LOGISTICS
+    # =====================================================
+
+    "LOGISTICS": [
+        "CONCOR",
+        "BLUEDART",
+        "TCI",
+        "ALLCARGO",
+        "DELHIVERY",
+        "GATEWAY",
+        "MAHLOG",
+    ],
+
+    # =====================================================
+    # RETAIL
+    # =====================================================
 
     "RETAIL": [
         "DMART",
         "TRENT",
-        "ABFRL"
-    ]
+        "ABFRL",
+        "VMART",
+        "SHOPERSTOP",
+        "BATA",
+        "RELAXO",
+        "METRO",
+        "VEDANT",
+    ],
+
+    # =====================================================
+    # AGRI & SEEDS
+    # =====================================================
+
+    "AGRI": [
+        "UPL",
+        "DHANUKA",
+        "KAVERI",
+        "ASTEC",
+        "JUBLPHARMA",
+    ],
+
+    # =====================================================
+    # PAPER & PACKAGING
+    # =====================================================
+
+    "PAPER_PACKAGING": [
+        "ITC",         # Also in FMCG — cross sector
+        "TNPL",
+        "WCIL",
+        "HUHTAMAKI",
+        "MOLD-TEK",
+    ],
+
+    # =====================================================
+    # TEXTILES & APPAREL
+    # =====================================================
+
+    "TEXTILES": [
+        "PAGEIND",
+        "RAYMOND",
+        "ARVIND",
+        "TRIDENT",
+        "VARDHMAN",
+        "WELSPUNIND",
+        "GRASIM",
+        "FILATEX",
+    ],
+
+    # =====================================================
+    # CAPITAL GOODS & ENGINEERING
+    # =====================================================
+
+    "CAPITAL_GOODS": [
+        "SIEMENS",
+        "ABB",
+        "BHEL",
+        "THERMAX",
+        "CUMMINSIND",
+        "GRINDWELL",
+        "ELGIEQUIP",
+        "KENNAMETAL",
+        "AIAENG",
+        "KAYNES",
+        "SYRMA",
+    ],
+
+    # =====================================================
+    # SPECIALTY CHEMICALS / SPECIALTY MATERIALS
+    # =====================================================
+
+    "SPECIALTY": [
+        "MGLI",
+        "NOCIL",
+        "INDIGOPNTS",
+        "AKZOINDIA",
+        "BERGER",
+        "ASIANPAINT",
+        "KANSAINER",
+        "SHEELA",
+    ],
+
 }
 
 # =========================================================
-# ALL SYMBOLS
+# ALL SYMBOLS — deduplicated flat list
 # =========================================================
 
 ALL_FNO_SYMBOLS = sorted(list({
@@ -219,16 +628,18 @@ ALL_FNO_SYMBOLS = sorted(list({
 
 # =========================================================
 # SYMBOL -> SECTOR
+# (first sector wins for any cross-listed symbol)
 # =========================================================
 
-SYMBOL_TO_SECTOR = {
+SYMBOL_TO_SECTOR = {}
 
-    symbol: sector
+for _sector, _symbols in FNO_SECTORS.items():
 
-    for sector, symbols in FNO_SECTORS.items()
+    for _symbol in _symbols:
 
-    for symbol in symbols
-}
+        if _symbol not in SYMBOL_TO_SECTOR:
+
+            SYMBOL_TO_SECTOR[_symbol] = _sector
 
 # =========================================================
 # SAFE FUNCTIONS
@@ -277,11 +688,18 @@ def is_market_open():
 
     now = ist_now()
 
+    # Weekend
+
     if now.weekday() >= 5:
         return False
 
+    # NSE Holiday
+
     if now.date() in NSE_HOLIDAYS_2026:
         return False
+
+    # 8 AM → 4 PM IST window
+    # (includes pre-open 9:00 and post-close data)
 
     market_open = now.replace(
         hour=8,
@@ -368,7 +786,7 @@ def send_telegram(
         ):
 
             print(
-                "Telegram rate limit"
+                "Telegram rate limit, retrying..."
             )
 
             time.sleep(2)
@@ -407,6 +825,7 @@ def get_session():
             "session_created",
             0
         ) > 3600
+
     ):
 
         s = requests.Session()
@@ -452,6 +871,8 @@ def nse_get(
                 401,
                 403
             ):
+
+                # Force session refresh on next call
 
                 thread_local.session_created = 0
 
@@ -592,6 +1013,7 @@ def fetch_stock(symbol):
 
         # =====================================================
         # EARLY FILTER
+        # Skip OI and option chain if price not in range
         # =====================================================
 
         if price_pct < 1:
@@ -604,7 +1026,7 @@ def fetch_stock(symbol):
             return result
 
         # =====================================================
-        # FUTURES OI
+        # FUTURES OI — nearest expiry contract only
         # =====================================================
 
         try:
@@ -615,9 +1037,7 @@ def fetch_stock(symbol):
                 f"symbol={symbol}"
             )
 
-            oi_data = nse_get(
-                oi_url
-            )
+            oi_data = nse_get(oi_url)
 
             stocks = oi_data.get(
                 "stocks",
@@ -642,7 +1062,7 @@ def fetch_stock(symbol):
 
                 try:
 
-                    return dt.strptime(
+                    return datetime.strptime(
 
                         x.get(
                             "metadata",
@@ -657,7 +1077,10 @@ def fetch_stock(symbol):
 
                 except:
 
-                    return dt.max
+                    # naive sentinel, safe since
+                    # strptime returns naive
+
+                    return datetime.max
 
             futures = sorted(
                 futures,
@@ -693,7 +1116,7 @@ def fetch_stock(symbol):
             )
 
         # =====================================================
-        # OPTION CHAIN
+        # OPTION CHAIN — ATM PE writing
         # =====================================================
 
         try:
@@ -719,6 +1142,8 @@ def fetch_stock(symbol):
             )
 
             total = 0
+
+            # Sort by proximity to current price
 
             atm_rows = sorted(
 
@@ -847,8 +1272,7 @@ def get_sector_strength(
 
         move = (
             (
-                d.get("price", 0)
-                - pc
+                d.get("price", 0) - pc
             )
             / pc
         ) * 100
@@ -899,45 +1323,14 @@ def process_bullish_setup(
 
     try:
 
-        price = stock.get(
-            "price",
-            0
-        )
-
-        prev_close = stock.get(
-            "prev_close",
-            0
-        )
-
-        vwap = stock.get(
-            "vwap",
-            0
-        )
-
-        price_pct = stock.get(
-            "price_pct",
-            0
-        )
-
-        oi_change_pct = stock.get(
-            "oi_change_pct",
-            0
-        )
-
-        oi_strength = stock.get(
-            "oi_strength",
-            False
-        )
-
-        put_writing = stock.get(
-            "put_writing",
-            False
-        )
-
-        pe_oi_change = stock.get(
-            "pe_oi_change",
-            0
-        )
+        price = stock.get("price", 0)
+        prev_close = stock.get("prev_close", 0)
+        vwap = stock.get("vwap", 0)
+        price_pct = stock.get("price_pct", 0)
+        oi_change_pct = stock.get("oi_change_pct", 0)
+        oi_strength = stock.get("oi_strength", False)
+        put_writing = stock.get("put_writing", False)
+        pe_oi_change = stock.get("pe_oi_change", 0)
 
         if prev_close <= 0:
             return
@@ -976,15 +1369,12 @@ def process_bullish_setup(
         score = 0
 
         if price_pct >= 3:
-
             score += 25
 
         elif price_pct >= 2:
-
             score += 20
 
         elif price_pct >= 1:
-
             score += 15
 
         if above_vwap:
@@ -999,11 +1389,9 @@ def process_bullish_setup(
         score += sector_score
 
         if market_trend > 1:
-
             score += 15
 
         elif market_trend > 0.5:
-
             score += 10
 
         score = min(score, 100)
@@ -1037,15 +1425,10 @@ def process_bullish_setup(
 
         def icon(v):
 
-            return (
-                "✅"
-                if v
-                else
-                "❌"
-            )
+            return "✅" if v else "❌"
 
         # =====================================================
-        # MESSAGE
+        # INTERPRETATION
         # =====================================================
 
         interpretation = (
@@ -1059,54 +1442,44 @@ def process_bullish_setup(
             "🟡 Moderate bullish setup"
         )
 
+        # =====================================================
+        # MESSAGE
+        # =====================================================
+
         msg = (
 
             f"🔥 <b>BULLISH SETUP</b>\n\n"
 
             f"<b>Stock:</b> {symbol}\n"
-
             f"<b>Price:</b> ₹{price:,.2f}\n"
-
-            f"<b>Change:</b> "
-            f"{price_pct:+.2f}%\n\n"
+            f"<b>Change:</b> {price_pct:+.2f}%\n\n"
 
             f"<b>MARKET</b>\n"
-
-            f"📈 NIFTY Trend: "
-            f"{market_trend:+.2f}%\n"
-
-            f"🏭 Sector: "
-            f"{sector_name}\n\n"
+            f"📈 NIFTY Trend: {market_trend:+.2f}%\n"
+            f"🏭 Sector: {sector_name}\n\n"
 
             f"<b>SIGNALS</b>\n"
-
             f"{icon(above_vwap)} Above VWAP\n"
-
             f"{icon(oi_strength)} Futures OI Buildup\n"
-
             f"{icon(put_writing)} PE Writing\n\n"
 
             f"<b>DETAILS</b>\n"
-
             f"VWAP: ₹{vwap:,.2f}\n"
-
-            f"OI Change: "
-            f"{oi_change_pct:+.2f}%\n"
-
-            f"PE OI Change: "
-            f"{pe_oi_change:,}\n"
-
-            f"Sector Score: "
-            f"{sector_score}\n\n"
+            f"OI Change: {oi_change_pct:+.2f}%\n"
+            f"PE OI Change: {pe_oi_change:,}\n"
+            f"Sector Score: {sector_score}\n\n"
 
             f"<b>CONFIDENCE</b>\n"
-
             f"🎯 {score}/100\n\n"
 
             f"{interpretation}"
         )
 
         send_telegram(msg)
+
+        # Rate limit guard — only sleeps on actual sends
+
+        time.sleep(0.5)
 
     except Exception as e:
 
@@ -1130,6 +1503,8 @@ def run_bot():
 
         today = ist_now().date()
 
+        # Daily alert reset
+
         if last_cleared != today:
 
             with seen_alerts_lock:
@@ -1138,9 +1513,7 @@ def run_bot():
 
             last_cleared = today
 
-            print(
-                "Cleared old alerts"
-            )
+            print("Cleared old alerts")
 
         try:
 
@@ -1150,28 +1523,22 @@ def run_bot():
 
             if not is_market_open():
 
-                print(
-                    "Market closed..."
-                )
+                print("Market closed...")
 
-                time.sleep(300)
+                time.sleep(60)
 
                 continue
 
-            print(
-                "Checking bullish setups..."
-            )
+            print("Checking bullish setups...")
 
             # =================================================
             # MARKET TREND
             # =================================================
 
-            market_trend = (
-                get_market_trend()
-            )
+            market_trend = get_market_trend()
 
             # =================================================
-            # FETCH DATA
+            # FETCH ALL STOCKS IN PARALLEL
             # =================================================
 
             all_data = {}
@@ -1193,9 +1560,7 @@ def run_bot():
                 if not r:
                     continue
 
-                all_data[
-                    r["symbol"]
-                ] = r
+                all_data[r["symbol"]] = r
 
             snapshot = dict(all_data)
 
@@ -1212,40 +1577,27 @@ def run_bot():
                     snapshot
                 )
 
-                # Avoid Telegram burst limits
-
-                time.sleep(0.5)
-
             print(
-                "Cycle complete:",
-                datetime.now()
+                f"Cycle complete: {datetime.now()}"
+                f" | Stocks: {len(snapshot)}"
             )
 
         except Exception as e:
 
-            print(
-                "MAIN LOOP ERROR:",
-                e
-            )
+            print("MAIN LOOP ERROR:", e)
 
         # =====================================================
-        # EXACT 5 MIN CYCLE
+        # EXACT 5 MIN CADENCE
         # =====================================================
 
-        elapsed = (
-            time.time()
-            - cycle_start
-        )
+        elapsed = time.time() - cycle_start
 
         sleep_time = max(
             0,
             CYCLE_SECONDS - elapsed
         )
 
-        print(
-            f"Sleeping "
-            f"{sleep_time:.2f}s"
-        )
+        print(f"Sleeping {sleep_time:.2f}s")
 
         time.sleep(sleep_time)
 
@@ -1255,8 +1607,17 @@ def run_bot():
 
 if __name__ == "__main__":
 
+    if not BOT_TOKEN or not CHAT_ID:
+
+        print(
+            "FATAL: BOT_TOKEN / CHAT_ID not set"
+        )
+
+        raise SystemExit(1)
+
     send_telegram(
-        "🚀 Bullish Institutional Bot Started"
+        "🚀 Bullish Institutional Bot Started\n"
+        f"📊 Tracking {len(ALL_FNO_SYMBOLS)} F&O stocks"
     )
 
     run_bot()
