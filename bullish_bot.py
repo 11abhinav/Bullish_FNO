@@ -1,3 +1,55 @@
+# =========================================================
+# ADVANCED NSE MOMENTUM TELEGRAM BOT
+# =========================================================
+#
+# WHAT THIS BOT DOES
+# ---------------------------------------------------------
+#
+# ✅ Runs automatically via Railway CRON
+# ✅ Scans NSE stocks every 5 minutes
+# ✅ Uses Yahoo Finance (yfinance) for live data
+# ✅ Detects bullish momentum stocks
+# ✅ Sends Telegram alerts for strong movers
+# ✅ Tracks intraday percentage moves
+# ✅ Uses custom FNO + momentum watchlist
+# ✅ Prevents Railway log flooding
+# ✅ Handles yfinance rate limits safely
+# ✅ Handles MultiIndex dataframe issues
+# ✅ Railway-safe low logging version
+#
+# ALERT LOGIC
+# ---------------------------------------------------------
+#
+# Sends alert when:
+#
+# Current move % > PRICE_MOVE_THRESHOLD
+#
+# Example:
+#   Threshold = 0.8
+#   Alert triggers at:
+#       +0.8%
+#       +1.5%
+#       +3%
+#
+# CURRENT FLOW
+# ---------------------------------------------------------
+#
+# Railway Cron Starts
+#        ↓
+# Check Market Hours
+#        ↓
+# Fetch Yahoo Finance Data
+#        ↓
+# Calculate Intraday Move %
+#        ↓
+# Filter Momentum Stocks
+#        ↓
+# Send Telegram Alerts
+#        ↓
+# Exit Cleanly
+#
+# =========================================================
+
 import os
 import sys
 import time
@@ -72,6 +124,15 @@ ALERT_START = (9, 15)
 ALERT_END = (15, 30)
 
 # =========================================================
+# YAHOO SYMBOL OVERRIDES
+# =========================================================
+
+YF_SYMBOL_MAP = {
+
+    "TMCV": "TATAMOTORS.NS"
+}
+
+# =========================================================
 # WATCHLIST
 # =========================================================
 
@@ -140,7 +201,7 @@ ALL_FNO_SYMBOLS = [
     "SHRIRAMFIN",
     "MUTHOOTFIN",
     "MANAPPURAM",
-    "TATAMOTORS",
+    "TMCV",
     "M&M",
     "EICHERMOT",
     "TVSMOTOR",
@@ -221,9 +282,14 @@ def fetch_stock(symbol):
             random.uniform(0.8, 2.0)
         )
 
+        yf_symbol = YF_SYMBOL_MAP.get(
+            symbol,
+            f"{symbol}.NS"
+        )
+
         df = yf.download(
 
-            f"{symbol}.NS",
+            yf_symbol,
 
             period="1d",
 
@@ -282,12 +348,9 @@ def fetch_stock(symbol):
 
     except Exception:
 
-        # =============================================
-        # SILENT RATE LIMIT HANDLING
-        # =============================================
-
         err = str(traceback.format_exc())
 
+        # SILENT YFINANCE RATE LIMIT HANDLING
         if "YFRateLimitError" in err:
 
             return None
