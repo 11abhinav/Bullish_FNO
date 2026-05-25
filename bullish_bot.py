@@ -1,5 +1,7 @@
 import os
 import sys
+import time
+import random
 import logging
 import traceback
 import requests
@@ -55,6 +57,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 PRICE_MOVE_THRESHOLD = 0.8
+
+# IMPORTANT
+# KEEP LOW TO AVOID YF RATE LIMIT
 
 MAX_WORKERS = 1
 
@@ -207,6 +212,15 @@ def fetch_stock(symbol):
 
     try:
 
+        # =============================================
+        # RANDOM DELAY
+        # FIXES YFINANCE RATE LIMIT
+        # =============================================
+
+        time.sleep(
+            random.uniform(0.8, 2.0)
+        )
+
         df = yf.download(
 
             f"{symbol}.NS",
@@ -267,6 +281,16 @@ def fetch_stock(symbol):
         }
 
     except Exception:
+
+        # =============================================
+        # SILENT RATE LIMIT HANDLING
+        # =============================================
+
+        err = str(traceback.format_exc())
+
+        if "YFRateLimitError" in err:
+
+            return None
 
         traceback.print_exc()
 
