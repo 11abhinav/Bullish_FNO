@@ -124,15 +124,6 @@ ALERT_START = (9, 15)
 ALERT_END = (15, 30)
 
 # =========================================================
-# YAHOO SYMBOL OVERRIDES
-# =========================================================
-
-YF_SYMBOL_MAP = {
-
-    "TMCV": "TATAMOTORS.NS"
-}
-
-# =========================================================
 # WATCHLIST
 # =========================================================
 
@@ -201,7 +192,12 @@ ALL_FNO_SYMBOLS = [
     "SHRIRAMFIN",
     "MUTHOOTFIN",
     "MANAPPURAM",
-    "TMCV",
+
+    # FIXED TATA MOTORS SYMBOL
+    # Stable Yahoo Finance Symbol
+
+    "TATAMTRDVR",
+
     "M&M",
     "EICHERMOT",
     "TVSMOTOR",
@@ -282,10 +278,7 @@ def fetch_stock(symbol):
             random.uniform(0.8, 2.0)
         )
 
-        yf_symbol = YF_SYMBOL_MAP.get(
-            symbol,
-            f"{symbol}.NS"
-        )
+        yf_symbol = f"{symbol}.NS"
 
         df = yf.download(
 
@@ -302,11 +295,18 @@ def fetch_stock(symbol):
             threads=False
         )
 
+        # =============================================
+        # EMPTY DATA CHECK
+        # =============================================
+
         if df.empty:
 
             return None
 
+        # =============================================
         # FIX MULTIINDEX
+        # =============================================
+
         if isinstance(
             df.columns,
             pd.MultiIndex
@@ -350,8 +350,23 @@ def fetch_stock(symbol):
 
         err = str(traceback.format_exc())
 
-        # SILENT YFINANCE RATE LIMIT HANDLING
+        # =============================================
+        # SILENT RATE LIMIT HANDLING
+        # =============================================
+
         if "YFRateLimitError" in err:
+
+            return None
+
+        # =============================================
+        # SILENT YAHOO ERRORS
+        # =============================================
+
+        if (
+            "possibly delisted" in err
+            or "404" in err
+            or "No data found" in err
+        ):
 
             return None
 
@@ -369,7 +384,7 @@ def process_stock(symbol, stock):
 
         move_pct = stock["move_pct"]
 
-        if move_pct < PRICE_MOVE_THRESHOLD:
+        if abs(move_pct) < PRICE_MOVE_THRESHOLD:
 
             return
 
@@ -381,13 +396,13 @@ def process_stock(symbol, stock):
 
         msg = (
 
-            f"🔥 BULLISH SETUP\n\n"
+            f"🔥 MOMENTUM ALERT\n\n"
 
             f"Stock: {symbol}\n"
 
             f"Move: {move_pct:+.2f}%\n"
 
-            f"Price: ₹{stock['price']}"
+            f"Price: ₹{stock['price']:.2f}"
         )
 
         send_telegram(msg)
