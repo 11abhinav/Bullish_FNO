@@ -1,34 +1,33 @@
 import os
 import sys
-import time
-import requests
-import pytz
 import logging
 import traceback
+import requests
 import pandas as pd
 import yfinance as yf
 
-from zoneinfo import ZoneInfo
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
+from datetime import (
+    datetime,
+    timedelta,
+    timezone
+)
 
-# =========================================================
-# FORCE START LOG
-# =========================================================
-
-print("🚀 FILE STARTED", flush=True)
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    as_completed
+)
 
 # =========================================================
 # LOGGER
 # =========================================================
+
+print("🚀 FILE STARTED", flush=True)
 
 logging.basicConfig(
 
     level=logging.INFO,
 
     format="%(asctime)s | %(levelname)s | %(message)s",
-
-    datefmt="%Y-%m-%d %H:%M:%S",
 
     force=True,
 
@@ -39,28 +38,13 @@ logging.basicConfig(
 
 logger = logging.getLogger()
 
-logger.setLevel(logging.INFO)
-
-# FORCE FLUSH
-for handler in logger.handlers:
-
-    handler.flush = sys.stdout.flush
-
 def log(message):
 
     print(message, flush=True)
 
     logger.info(message)
 
-log("=" * 80)
 log("🚀 SCRIPT STARTED")
-log("=" * 80)
-
-# =========================================================
-# IST
-# =========================================================
-
-IST = ZoneInfo("Asia/Kolkata")
 
 # =========================================================
 # CONFIG
@@ -73,6 +57,14 @@ CHAT_ID = os.getenv("CHAT_ID")
 PRICE_MOVE_THRESHOLD = 0.8
 
 MAX_WORKERS = 1
+
+IST = timezone(
+    timedelta(hours=5, minutes=30)
+)
+
+ALERT_START = (9, 15)
+
+ALERT_END = (15, 30)
 
 # =========================================================
 # WATCHLIST
@@ -151,31 +143,9 @@ ALL_FNO_SYMBOLS = [
 ]
 
 log(
-    f"📊 Total Symbols Loaded: "
+    f"📊 Watchlist Loaded: "
     f"{len(ALL_FNO_SYMBOLS)}"
 )
-
-# =========================================================
-# SAFE FLOAT
-# =========================================================
-
-def safe_float(v):
-
-    try:
-        return float(v)
-
-    except:
-        return 0.0
-
-# =========================================================
-# TIME
-# =========================================================
-
-def ist_now():
-
-    tz = pytz.timezone("Asia/Kolkata")
-
-    return datetime.now(tz)
 
 # =========================================================
 # MARKET HOURS
@@ -183,41 +153,15 @@ def ist_now():
 
 def is_market_open():
 
-    now = ist_now()
-
-    log(
-        f"⏰ Market Check IST: "
-        f"{now.strftime('%Y-%m-%d %H:%M:%S')}"
-    )
+    now = datetime.now(IST)
 
     if now.weekday() >= 5:
 
-        log("❌ Weekend detected")
-
         return False
 
-    market_open = now.replace(
-        hour=9,
-        minute=15,
-        second=0,
-        microsecond=0
-    )
+    t = (now.hour, now.minute)
 
-    market_close = now.replace(
-        hour=15,
-        minute=30,
-        second=0,
-        microsecond=0
-    )
-
-    is_open = market_open <= now <= market_close
-
-    log(
-        f"📈 Market Open Status: "
-        f"{is_open}"
-    )
-
-    return is_open
+    return ALERT_START <= t < ALERT_END
 
 # =========================================================
 # TELEGRAM
@@ -227,46 +171,33 @@ def send_telegram(msg):
 
     try:
 
-        if not BOT_TOKEN or not CHAT_ID:
-
-            log(
-                "❌ BOT_TOKEN / CHAT_ID missing"
-            )
-
-            return
-
-        log(
-            "📨 Sending Telegram alert..."
-        )
-
         url = (
             f"https://api.telegram.org/"
             f"bot{BOT_TOKEN}/sendMessage"
         )
 
-        payload = {
-
-            "chat_id": CHAT_ID,
-
-            "text": msg
-        }
-
         r = requests.post(
+
             url,
-            json=payload,
+
+            data={
+
+                "chat_id": CHAT_ID,
+
+                "text": msg
+            },
+
             timeout=20
         )
 
         log(
-            f"📨 Telegram Status="
+            f"📨 Telegram="
             f"{r.status_code}"
         )
 
     except Exception:
 
         traceback.print_exc()
-
-        log("❌ Telegram Error")
 
 # =========================================================
 # FETCH STOCK
@@ -275,10 +206,6 @@ def send_telegram(msg):
 def fetch_stock(symbol):
 
     try:
-
-        log(
-            f"🚀 START FETCH: {symbol}"
-        )
 
         df = yf.download(
 
@@ -295,29 +222,15 @@ def fetch_stock(symbol):
             threads=False
         )
 
-        log(
-            f"📦 Rows={len(df)} | "
-            f"{symbol}"
-        )
-
         if df.empty:
-
-            log(
-                f"❌ No data: {symbol}"
-            )
 
             return None
 
-        # FIX MULTI INDEX
+        # FIX MULTIINDEX
         if isinstance(
             df.columns,
             pd.MultiIndex
         ):
-
-            log(
-                f"🛠️ Fixing MultiIndex: "
-                f"{symbol}"
-            )
 
             df.columns = (
                 df.columns
@@ -326,20 +239,15 @@ def fetch_stock(symbol):
 
         latest = df.iloc[-1]
 
-        prev_close = safe_float(
+        prev_close = float(
             df["Close"].iloc[-2]
         )
 
-        last_price = safe_float(
+        last_price = float(
             latest["Close"]
         )
 
         if prev_close <= 0:
-
-            log(
-                f"❌ Invalid prev close: "
-                f"{symbol}"
-            )
 
             return None
 
@@ -348,11 +256,6 @@ def fetch_stock(symbol):
                 last_price - prev_close
             ) / prev_close
         ) * 100
-
-        log(
-            f"✅ {symbol} | "
-            f"Move={round(move_pct,2)}%"
-        )
 
         return {
 
@@ -367,11 +270,6 @@ def fetch_stock(symbol):
 
         traceback.print_exc()
 
-        log(
-            f"❌ FETCH ERROR: "
-            f"{symbol}"
-        )
-
         return None
 
 # =========================================================
@@ -384,18 +282,15 @@ def process_stock(symbol, stock):
 
         move_pct = stock["move_pct"]
 
-        log(
-            f"🔎 Checking: {symbol} | "
-            f"Move={round(move_pct,2)}%"
-        )
-
         if move_pct < PRICE_MOVE_THRESHOLD:
 
-            log(
-                f"❌ Rejected: {symbol}"
-            )
-
             return
+
+        log(
+            f"🚨 ALERT | "
+            f"{symbol} | "
+            f"{move_pct:+.2f}%"
+        )
 
         msg = (
 
@@ -410,11 +305,6 @@ def process_stock(symbol, stock):
 
         send_telegram(msg)
 
-        log(
-            f"✅ ALERT SENT: "
-            f"{symbol}"
-        )
-
     except Exception:
 
         traceback.print_exc()
@@ -425,18 +315,7 @@ def process_stock(symbol, stock):
 
 def run_bot():
 
-    log("=" * 80)
-
-    log(
-        "🚀 CRON RUN STARTED"
-    )
-
-    log(
-        f"⏰ IST Time: "
-        f"{datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-
-    log("=" * 80)
+    log("🚀 CRON RUN STARTED")
 
     if not is_market_open():
 
@@ -444,49 +323,49 @@ def run_bot():
 
         return
 
-    log(
-        "📊 STARTING PARALLEL FETCH"
-    )
+    log("📊 FETCH STARTED")
+
+    valid = 0
 
     with ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     ) as executor:
 
-        results = list(
-
-            executor.map(
+        futures = {
+            executor.submit(
                 fetch_stock,
-                ALL_FNO_SYMBOLS
-            )
-        )
+                symbol
+            ): symbol
+
+            for symbol in ALL_FNO_SYMBOLS
+        }
+
+        for future in as_completed(futures):
+
+            try:
+
+                stock = future.result()
+
+                if not stock:
+                    continue
+
+                valid += 1
+
+                process_stock(
+                    stock["symbol"],
+                    stock
+                )
+
+            except Exception:
+
+                traceback.print_exc()
 
     log(
-        f"📦 FETCH FINISHED | "
-        f"Results={len(results)}"
+        f"📦 FETCH DONE | "
+        f"Valid={valid}"
     )
 
-    valid = 0
-
-    for stock in results:
-
-        if not stock:
-            continue
-
-        valid += 1
-
-        process_stock(
-            stock["symbol"],
-            stock
-        )
-
-    log(
-        f"✅ VALID STOCKS: "
-        f"{valid}"
-    )
-
-    log(
-        "✅ CRON RUN FINISHED"
-    )
+    log("✅ CRON RUN FINISHED")
 
 # =========================================================
 # ENTRY
@@ -495,16 +374,6 @@ def run_bot():
 if __name__ == "__main__":
 
     try:
-
-        log(
-            f"BOT_TOKEN EXISTS="
-            f"{bool(BOT_TOKEN)}"
-        )
-
-        log(
-            f"CHAT_ID EXISTS="
-            f"{bool(CHAT_ID)}"
-        )
 
         if not BOT_TOKEN or not CHAT_ID:
 
