@@ -13,6 +13,12 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 # =========================================================
+# FORCE START LOG
+# =========================================================
+
+print("🚀 FILE STARTED", flush=True)
+
+# =========================================================
 # LOGGER
 # =========================================================
 
@@ -35,7 +41,7 @@ logger = logging.getLogger()
 
 logger.setLevel(logging.INFO)
 
-# FORCE IMMEDIATE FLUSH
+# FORCE FLUSH
 for handler in logger.handlers:
 
     handler.flush = sys.stdout.flush
@@ -63,8 +69,6 @@ IST = ZoneInfo("Asia/Kolkata")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 CHAT_ID = os.getenv("CHAT_ID")
-
-CHECK_INTERVAL = 300
 
 PRICE_MOVE_THRESHOLD = 0.8
 
@@ -158,11 +162,9 @@ log(
 def safe_float(v):
 
     try:
-
         return float(v)
 
     except:
-
         return 0.0
 
 # =========================================================
@@ -195,7 +197,6 @@ def is_market_open():
         return False
 
     market_open = now.replace(
-
         hour=9,
         minute=15,
         second=0,
@@ -203,7 +204,6 @@ def is_market_open():
     )
 
     market_close = now.replace(
-
         hour=15,
         minute=30,
         second=0,
@@ -252,11 +252,8 @@ def send_telegram(msg):
         }
 
         r = requests.post(
-
             url,
-
             json=payload,
-
             timeout=20
         )
 
@@ -269,9 +266,7 @@ def send_telegram(msg):
 
         traceback.print_exc()
 
-        log(
-            "❌ Telegram Error"
-        )
+        log("❌ Telegram Error")
 
 # =========================================================
 # FETCH STOCK
@@ -284,15 +279,6 @@ def fetch_stock(symbol):
         log(
             f"🚀 START FETCH: {symbol}"
         )
-
-        time.sleep(1)
-
-        log(
-            f"🌐 CALLING YFINANCE: "
-            f"{symbol}"
-        )
-
-        start_time = time.time()
 
         df = yf.download(
 
@@ -309,15 +295,9 @@ def fetch_stock(symbol):
             threads=False
         )
 
-        elapsed = round(
-            time.time() - start_time,
-            2
-        )
-
         log(
-            f"📦 YF DONE: {symbol} | "
-            f"Rows={len(df)} | "
-            f"Time={elapsed}s"
+            f"📦 Rows={len(df)} | "
+            f"{symbol}"
         )
 
         if df.empty:
@@ -328,10 +308,7 @@ def fetch_stock(symbol):
 
             return None
 
-        # =================================================
         # FIX MULTI INDEX
-        # =================================================
-
         if isinstance(
             df.columns,
             pd.MultiIndex
@@ -347,64 +324,6 @@ def fetch_stock(symbol):
                 .get_level_values(0)
             )
 
-        log(
-            f"📊 Columns: "
-            f"{list(df.columns)}"
-        )
-
-        required_cols = [
-
-            "Open",
-            "High",
-            "Low",
-            "Close",
-            "Volume"
-        ]
-
-        for col_name in required_cols:
-
-            if col_name not in df.columns:
-
-                log(
-                    f"❌ Missing column "
-                    f"{col_name}: {symbol}"
-                )
-
-                return None
-
-            if isinstance(
-
-                df[col_name],
-
-                pd.DataFrame
-            ):
-
-                log(
-                    f"⚠️ DataFrame column detected "
-                    f"{col_name}: {symbol}"
-                )
-
-                df[col_name] = (
-                    df[col_name]
-                    .iloc[:, 0]
-                )
-
-        df.dropna(inplace=True)
-
-        log(
-            f"📦 Clean rows: "
-            f"{len(df)} | {symbol}"
-        )
-
-        if len(df) < 5:
-
-            log(
-                f"❌ Not enough candles: "
-                f"{symbol}"
-            )
-
-            return None
-
         latest = df.iloc[-1]
 
         prev_close = safe_float(
@@ -413,10 +332,6 @@ def fetch_stock(symbol):
 
         last_price = safe_float(
             latest["Close"]
-        )
-
-        volume = int(
-            latest["Volume"]
         )
 
         if prev_close <= 0:
@@ -428,7 +343,7 @@ def fetch_stock(symbol):
 
             return None
 
-        price_pct = (
+        move_pct = (
             (
                 last_price - prev_close
             ) / prev_close
@@ -436,8 +351,7 @@ def fetch_stock(symbol):
 
         log(
             f"✅ {symbol} | "
-            f"Price={round(last_price,2)} | "
-            f"Move={round(price_pct,2)}%"
+            f"Move={round(move_pct,2)}%"
         )
 
         return {
@@ -446,11 +360,7 @@ def fetch_stock(symbol):
 
             "price": last_price,
 
-            "prev_close": prev_close,
-
-            "price_pct": price_pct,
-
-            "volume": volume
+            "move_pct": move_pct
         }
 
     except Exception:
@@ -458,7 +368,8 @@ def fetch_stock(symbol):
         traceback.print_exc()
 
         log(
-            f"❌ FETCH ERROR: {symbol}"
+            f"❌ FETCH ERROR: "
+            f"{symbol}"
         )
 
         return None
@@ -467,56 +378,46 @@ def fetch_stock(symbol):
 # PROCESS STOCK
 # =========================================================
 
-def process_bullish_setup(symbol, stock):
+def process_stock(symbol, stock):
 
     try:
 
-        log(
-            f"🔎 Processing: {symbol}"
-        )
-
-        price_pct = stock.get(
-            "price_pct",
-            0
-        )
+        move_pct = stock["move_pct"]
 
         log(
-            f"📈 {symbol} Move="
-            f"{round(price_pct,2)}%"
+            f"🔎 Checking: {symbol} | "
+            f"Move={round(move_pct,2)}%"
         )
 
-        if price_pct < PRICE_MOVE_THRESHOLD:
+        if move_pct < PRICE_MOVE_THRESHOLD:
 
             log(
-                f"❌ Rejected: {symbol} | "
-                f"Move below threshold"
+                f"❌ Rejected: {symbol}"
             )
 
-            return None
+            return
 
         msg = (
+
             f"🔥 BULLISH SETUP\n\n"
+
             f"Stock: {symbol}\n"
-            f"Move: {price_pct:+.2f}%\n"
+
+            f"Move: {move_pct:+.2f}%\n"
+
             f"Price: ₹{stock['price']}"
         )
 
+        send_telegram(msg)
+
         log(
-            f"🚀 ALERT TRIGGERED: "
+            f"✅ ALERT SENT: "
             f"{symbol}"
         )
-
-        return msg
 
     except Exception:
 
         traceback.print_exc()
-
-        log(
-            f"❌ PROCESS ERROR: {symbol}"
-        )
-
-        return None
 
 # =========================================================
 # MAIN BOT
@@ -527,7 +428,7 @@ def run_bot():
     log("=" * 80)
 
     log(
-        "🚀 NEW SCAN STARTED"
+        "🚀 CRON RUN STARTED"
     )
 
     log(
@@ -539,19 +440,13 @@ def run_bot():
 
     if not is_market_open():
 
-        log(
-            "⏰ Market closed"
-        )
+        log("⏰ Market closed")
 
         return
-
-    all_data = {}
 
     log(
         "📊 STARTING PARALLEL FETCH"
     )
-
-    start_scan = time.time()
 
     with ThreadPoolExecutor(
         max_workers=MAX_WORKERS
@@ -565,130 +460,61 @@ def run_bot():
             )
         )
 
-    elapsed = round(
-        time.time() - start_scan,
-        2
-    )
-
     log(
         f"📦 FETCH FINISHED | "
-        f"Results={len(results)} | "
-        f"Time={elapsed}s"
+        f"Results={len(results)}"
     )
 
-    for r in results:
+    valid = 0
 
-        if not r:
+    for stock in results:
 
-            log(
-                "⚠️ Empty stock result skipped"
-            )
-
+        if not stock:
             continue
 
-        all_data[r["symbol"]] = r
+        valid += 1
 
-    log(
-        f"✅ Valid stocks: "
-        f"{len(all_data)}"
-    )
-
-    alerts_sent = 0
-
-    for idx, (symbol, stock) in enumerate(
-
-        all_data.items(),
-
-        start=1
-    ):
-
-        log(
-            f"🔄 Checking "
-            f"{idx}/{len(all_data)}: "
-            f"{symbol}"
-        )
-
-        msg = process_bullish_setup(
-            symbol,
+        process_stock(
+            stock["symbol"],
             stock
         )
 
-        if msg:
-
-            send_telegram(msg)
-
-            alerts_sent += 1
-
-            log(
-                f"✅ ALERT SENT: "
-                f"{symbol}"
-            )
-
-    log("=" * 80)
-
     log(
-        f"✅ SCAN FINISHED | "
-        f"Alerts={alerts_sent}"
+        f"✅ VALID STOCKS: "
+        f"{valid}"
     )
 
-    log("=" * 80)
+    log(
+        "✅ CRON RUN FINISHED"
+    )
 
 # =========================================================
-# CONTINUOUS LOOP
+# ENTRY
 # =========================================================
 
 if __name__ == "__main__":
 
     try:
 
+        log(
+            f"BOT_TOKEN EXISTS="
+            f"{bool(BOT_TOKEN)}"
+        )
+
+        log(
+            f"CHAT_ID EXISTS="
+            f"{bool(CHAT_ID)}"
+        )
+
         if not BOT_TOKEN or not CHAT_ID:
 
             log(
-                "❌ FATAL: BOT_TOKEN / CHAT_ID missing"
+                "❌ ENV VARIABLES MISSING"
             )
 
             raise SystemExit(1)
 
-        log("=" * 80)
-
-        log(
-            "🚀 Momentum Bot Started"
-        )
-
-        log(
-            f"⏰ IST Time: "
-            f"{datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-
-        log("=" * 80)
-
-        while True:
-
-            try:
-
-                log("=" * 80)
-
-                log(
-                    f"🔄 HEARTBEAT | "
-                    f"{datetime.now(IST).strftime('%H:%M:%S')}"
-                )
-
-                run_bot()
-
-            except Exception:
-
-                traceback.print_exc()
-
-                log(
-                    "❌ LOOP ERROR"
-                )
-
-            log(
-                f"😴 Sleeping "
-                f"{CHECK_INTERVAL} sec..."
-            )
-
-            time.sleep(CHECK_INTERVAL)
+        run_bot()
 
     except Exception:
 
