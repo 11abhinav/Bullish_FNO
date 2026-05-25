@@ -24,6 +24,10 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+logger.info("=" * 80)
+logger.info("🚀 SCRIPT STARTED")
+logger.info("=" * 80)
+
 # =========================================================
 # IST
 # =========================================================
@@ -39,17 +43,24 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 PE_OI_MIN_THRESHOLD = 50000
 
-MAX_WORKERS = 5
+# VERY IMPORTANT
+# LOWER THREADS TO REDUCE NSE BLOCKING
+MAX_WORKERS = 1
 
 HEADERS = {
+
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0 Safari/537.36"
     ),
+
     "Accept": "application/json",
+
     "Accept-Language": "en-US,en;q=0.9",
+
     "Referer": "https://www.nseindia.com/",
+
     "Connection": "keep-alive"
 }
 
@@ -58,6 +69,7 @@ HEADERS = {
 # =========================================================
 
 NSE_HOLIDAYS_2026 = {
+
     date(2026, 1, 26),
     date(2026, 3, 14),
     date(2026, 3, 25),
@@ -81,258 +93,85 @@ seen_alerts_lock = threading.Lock()
 thread_local = threading.local()
 
 # =========================================================
-# F&O SECTOR MAPPING
+# WATCHLIST
 # =========================================================
 
-FNO_SECTORS = {
+ALL_FNO_SYMBOLS = [
 
-    "BANKING": [
-        "SBIN",
-        "HDFCBANK",
-        "ICICIBANK",
-        "AXISBANK",
-        "KOTAKBANK",
-        "INDUSINDBK",
-        "BANKBARODA",
-        "PNB",
-        "FEDERALBNK",
-        "AUBANK",
-        "IDFCFIRSTB",
-        "CANBK",
-        "UNIONBANK",
-        "BANDHANBNK",
-        "INDIANB",
-        "IOB",
-        "MAHABANK",
-        "UCOBANK",
-        "CENTRALBK",
-        "RBLBANK",
-        "KARURVYSYA",
-        "CSBBANK",
-    ],
-
-    "IT": [
-        "INFY",
-        "TCS",
-        "WIPRO",
-        "TECHM",
-        "HCLTECH",
-        "LTIM",
-        "PERSISTENT",
-        "COFORGE",
-        "KPITTECH",
-        "MPHASIS",
-        "LTTS",
-        "OFSS",
-        "TATAELXSI",
-        "CYIENT",
-        "MASTEK",
-        "ZENSAR",
-        "BIRLASOFT",
-        "HEXAWARE",
-    ],
-
-    "POWER": [
-        "PFC",
-        "RECLTD",
-        "SUZLON",
-        "TATAPOWER",
-        "JSWENERGY",
-        "NTPC",
-        "NHPC",
-        "POWERGRID",
-        "IREDA",
-        "SJVN",
-        "CESC",
-        "TORNTPOWER",
-        "RPOWER",
-        "ADANIPOWER",
-        "ADANIGREEN",
-        "ADANIENSOL",
-        "INOXWIND",
-    ],
-
-    "INFRA": [
-        "LT",
-        "IRB",
-        "RVNL",
-        "NBCC",
-        "KEC",
-        "PNCINFRA",
-        "RAILTEL",
-        "RITES",
-        "IRCON",
-        "NCC",
-        "HGINFRA",
-        "KNRCON",
-        "ASHOKA",
-        "GMRAIRPORT",
-        "TITAGARH",
-        "TEXRAIL",
-    ],
-
-    "ENERGY": [
-        "ONGC",
-        "RELIANCE",
-        "IOC",
-        "BPCL",
-        "HINDPETRO",
-        "OIL",
-        "GAIL",
-        "IGL",
-        "MGL",
-        "PETRONET",
-        "GUJGASLTD",
-        "GSPL",
-        "CPCL",
-        "MRPL",
-    ],
-
-    "AUTO": [
-        "TATAMOTORS",
-        "MARUTI",
-        "M&M",
-        "HEROMOTOCO",
-        "BAJAJ-AUTO",
-        "EICHERMOT",
-        "TVSMOTOR",
-        "ASHOKLEY",
-        "MOTHERSON",
-        "BALKRISIND",
-        "BOSCHLTD",
-        "MRF",
-        "BHARATFORG",
-        "APOLLOTYRE",
-        "CEATLTD",
-        "EXIDEIND",
-        "AMARAJABAT",
-    ],
-
-    "METAL": [
-        "TATASTEEL",
-        "JSWSTEEL",
-        "HINDALCO",
-        "SAIL",
-        "JINDALSTEL",
-        "VEDL",
-        "NMDC",
-        "NATIONALUM",
-        "HINDCOPPER",
-        "JSPL",
-        "WELCORP",
-        "RATNAMANI",
-    ],
-
-    "PHARMA": [
-        "SUNPHARMA",
-        "CIPLA",
-        "DIVISLAB",
-        "DRREDDY",
-        "LUPIN",
-        "AUROPHARMA",
-        "TORNTPHARM",
-        "ALKEM",
-        "IPCALAB",
-        "GLENMARK",
-        "BIOCON",
-        "AJANTPHARM",
-        "LAURUSLABS",
-        "GRANULES",
-        "NATCOPHARM",
-        "ZYDUSLIFE",
-        "MANKIND",
-    ],
-
-    "FMCG": [
-        "ITC",
-        "HINDUNILVR",
-        "NESTLEIND",
-        "BRITANNIA",
-        "DABUR",
-        "TATACONSUM",
-        "COLPAL",
-        "MARICO",
-        "GODREJCP",
-        "EMAMILTD",
-        "VBL",
-        "RADICO",
-        "PATANJALI",
-        "BIKAJI",
-        "DEVYANI",
-    ],
-
-    "FINANCE": [
-        "BAJFINANCE",
-        "BAJAJFINSV",
-        "JIOFIN",
-        "CHOLAFIN",
-        "SHRIRAMFIN",
-        "SBICARD",
-        "MUTHOOTFIN",
-        "MANAPPURAM",
-        "LICHSGFIN",
-        "SUNDARMFIN",
-        "M&MFIN",
-        "POONAWALLA",
-        "AAVAS",
-        "HOMEFIRST",
-    ],
-
-    "DEFENCE": [
-        "BEL",
-        "HAL",
-        "BDL",
-        "MAZDOCK",
-        "COCHINSHIP",
-        "BEML",
-        "GRSE",
-        "PARAS",
-        "DATAPATTNS",
-    ],
-
-    "REAL_ESTATE": [
-        "DLF",
-        "GODREJPROP",
-        "OBEROIRLTY",
-        "PRESTIGE",
-        "BRIGADE",
-        "SOBHA",
-        "PHOENIXLTD",
-        "LODHA",
-    ]
-}
-
-# =========================================================
-# ALL SYMBOLS
-# =========================================================
-
-ALL_FNO_SYMBOLS = sorted(list({
-
-    symbol
-
-    for symbols in FNO_SECTORS.values()
-
-    for symbol in symbols
-}))
+    "SBIN",
+    "HDFCBANK",
+    "ICICIBANK",
+    "AXISBANK",
+    "KOTAKBANK",
+    "INFY",
+    "TCS",
+    "WIPRO",
+    "LT",
+    "BEL",
+    "RVNL",
+    "PFC",
+    "RECLTD",
+    "SUZLON",
+    "JIOFIN",
+    "TRENT",
+    "TITAN",
+    "MARUTI",
+    "ONGC",
+    "TATAPOWER",
+    "JSWENERGY",
+    "MAZDOCK",
+    "HAL",
+    "COCHINSHIP",
+    "ADANIPORTS",
+    "ADANIENT",
+    "CGPOWER",
+    "BHEL",
+    "IRB",
+    "NTPC",
+    "BANKBARODA",
+    "CANBK",
+    "UNIONBANK",
+    "LODHA",
+    "DLF",
+    "KPITTECH",
+    "PERSISTENT",
+    "COFORGE",
+    "POLYCAB",
+    "KEI",
+    "VBL",
+    "TATATECH",
+    "PIDILITIND",
+    "PVRINOX",
+    "INDUSTOWER",
+    "HINDCOPPER",
+    "TATASTEEL",
+    "JSWSTEEL",
+    "HINDALCO",
+    "POWERGRID",
+    "IOC",
+    "BPCL",
+    "GAIL",
+    "SUNPHARMA",
+    "DIVISLAB",
+    "DRREDDY",
+    "CIPLA",
+    "BAJFINANCE",
+    "BAJAJFINSV",
+    "CHOLAFIN",
+    "SHRIRAMFIN",
+    "MUTHOOTFIN",
+    "MANAPPURAM",
+    "TATAMOTORS",
+    "M&M",
+    "EICHERMOT",
+    "TVSMOTOR",
+    "ASHOKLEY"
+]
 
 logger.info(
-    f"📊 Total Watchlist Symbols: "
+    f"📊 Total Symbols Loaded: "
     f"{len(ALL_FNO_SYMBOLS)}"
 )
-
-# =========================================================
-# SYMBOL -> SECTOR
-# =========================================================
-
-SYMBOL_TO_SECTOR = {}
-
-for _sector, _symbols in FNO_SECTORS.items():
-
-    for _symbol in _symbols:
-
-        if _symbol not in SYMBOL_TO_SECTOR:
-
-            SYMBOL_TO_SECTOR[_symbol] = _sector
 
 # =========================================================
 # SAFE FUNCTIONS
@@ -347,7 +186,6 @@ def safe_float(v):
     except:
 
         return 0.0
-
 
 # =========================================================
 # TIME
@@ -385,6 +223,7 @@ def is_market_open():
         return False
 
     market_open = now.replace(
+
         hour=9,
         minute=15,
         second=0,
@@ -392,6 +231,7 @@ def is_market_open():
     )
 
     market_close = now.replace(
+
         hour=15,
         minute=30,
         second=0,
@@ -401,7 +241,8 @@ def is_market_open():
     is_open = market_open <= now <= market_close
 
     logger.info(
-        f"📈 Market Open Status: {is_open}"
+        f"📈 Market Open Status: "
+        f"{is_open}"
     )
 
     return is_open
@@ -417,7 +258,7 @@ def send_telegram(msg):
         if not BOT_TOKEN or not CHAT_ID:
 
             logger.error(
-                "BOT_TOKEN / CHAT_ID missing"
+                "❌ BOT_TOKEN / CHAT_ID missing"
             )
 
             return
@@ -428,24 +269,30 @@ def send_telegram(msg):
         )
 
         payload = {
+
             "chat_id": CHAT_ID,
+
             "text": msg
         }
 
-        requests.post(
+        r = requests.post(
+
             url,
+
             json=payload,
+
             timeout=20
         )
 
         logger.info(
-            "📨 Telegram message sent"
+            f"📨 Telegram Status="
+            f"{r.status_code}"
         )
 
     except Exception:
 
         logger.exception(
-            "Telegram Error"
+            "❌ Telegram Error"
         )
 
 # =========================================================
@@ -479,9 +326,16 @@ def get_session():
 
         try:
 
-            s.get(
+            r = s.get(
+
                 "https://www.nseindia.com/api/marketStatus",
+
                 timeout=10
+            )
+
+            logger.info(
+                f"🌐 NSE Session Init "
+                f"Status={r.status_code}"
             )
 
             thread_local.session = s
@@ -495,7 +349,7 @@ def get_session():
         except Exception:
 
             logger.exception(
-                "Failed to create NSE session"
+                "❌ Failed to create NSE session"
             )
 
     return thread_local.session
@@ -504,7 +358,7 @@ def get_session():
 # NSE GET
 # =========================================================
 
-def nse_get(url, retries=2):
+def nse_get(url, retries=1):
 
     for attempt in range(retries):
 
@@ -512,14 +366,21 @@ def nse_get(url, retries=2):
 
             session = get_session()
 
+            logger.info(
+                f"🌐 NSE API Call | "
+                f"Attempt={attempt+1}"
+            )
+
             r = session.get(
+
                 url,
+
                 timeout=20
             )
 
             logger.info(
-                f"🌐 NSE API Call | "
-                f"Status={r.status_code}"
+                f"📡 NSE Status="
+                f"{r.status_code}"
             )
 
             if r.status_code == 200:
@@ -533,7 +394,7 @@ def nse_get(url, retries=2):
             if r.status_code in (401, 403):
 
                 logger.warning(
-                    "⚠️ NSE session expired"
+                    "⚠️ NSE session expired / blocked"
                 )
 
                 thread_local.session_created = 0
@@ -541,7 +402,7 @@ def nse_get(url, retries=2):
             if r.status_code == 429:
 
                 logger.warning(
-                    "⚠️ Rate limit hit"
+                    "⚠️ NSE rate limit hit"
                 )
 
                 time.sleep(2)
@@ -549,12 +410,10 @@ def nse_get(url, retries=2):
         except Exception:
 
             logger.exception(
-                "NSE ERROR"
+                "❌ NSE ERROR"
             )
 
-        if attempt < retries - 1:
-
-            time.sleep(1)
+        time.sleep(1)
 
     return {}
 
@@ -570,24 +429,45 @@ def fetch_stock(symbol):
             f"🔍 Fetching: {symbol}"
         )
 
+        # IMPORTANT
+        # SLOW DOWN REQUESTS
+        time.sleep(1)
+
         result = {
+
             "symbol": symbol,
+
             "price": 0,
+
             "prev_close": 0,
+
             "price_pct": 0,
         }
 
         eq_url = (
+
             f"https://www.nseindia.com/api/"
             f"quote-equity?symbol={symbol}"
         )
 
         eq_data = nse_get(eq_url)
 
+        logger.info(
+            f"📦 NSE Response | "
+            f"{symbol} | "
+            f"HasData={bool(eq_data)}"
+        )
+
         if not eq_data:
 
             logger.warning(
-                f"❌ Empty data: {symbol}"
+                f"❌ Empty NSE response: "
+                f"{symbol}"
+            )
+
+            logger.warning(
+                "⚠️ NSE likely blocked "
+                "or returned empty response"
             )
 
             return None
@@ -608,6 +488,11 @@ def fetch_stock(symbol):
 
         if prev_close <= 0:
 
+            logger.warning(
+                f"❌ Invalid prev_close: "
+                f"{symbol}"
+            )
+
             return None
 
         price_pct = (
@@ -620,17 +505,16 @@ def fetch_stock(symbol):
 
         logger.info(
             f"✅ {symbol} | "
+            f"Price={price} | "
             f"Move={price_pct:+.2f}%"
         )
-
-        time.sleep(0.3)
 
         return result
 
     except Exception:
 
         logger.exception(
-            f"{symbol} FETCH ERROR"
+            f"❌ {symbol} FETCH ERROR"
         )
 
         return None
@@ -648,7 +532,8 @@ def process_bullish_setup(symbol, stock):
             0
         )
 
-        if price_pct < 2:
+        # LOWERED THRESHOLD
+        if price_pct < 0.8:
 
             logger.info(
                 f"❌ Rejected: {symbol} | "
@@ -667,7 +552,8 @@ def process_bullish_setup(symbol, stock):
             if key in seen_alerts:
 
                 logger.info(
-                    f"⚠️ Duplicate skipped: {symbol}"
+                    f"⚠️ Duplicate skipped: "
+                    f"{symbol}"
                 )
 
                 return None
@@ -681,7 +567,8 @@ def process_bullish_setup(symbol, stock):
         )
 
         logger.info(
-            f"🚀 Bullish setup detected: {symbol}"
+            f"🚀 Bullish setup detected: "
+            f"{symbol}"
         )
 
         return msg
@@ -689,7 +576,7 @@ def process_bullish_setup(symbol, stock):
     except Exception:
 
         logger.exception(
-            f"{symbol} PROCESS ERROR"
+            f"❌ {symbol} PROCESS ERROR"
         )
 
         return None
@@ -728,6 +615,10 @@ def run_bot():
 
     all_data = {}
 
+    logger.info(
+        "📊 Starting NSE fetch..."
+    )
+
     with ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     ) as executor:
@@ -753,6 +644,11 @@ def run_bot():
 
         all_data[r["symbol"]] = r
 
+    logger.info(
+        f"📦 Valid Stocks Received: "
+        f"{len(all_data)}"
+    )
+
     alerts_sent = 0
 
     for idx, (symbol, stock) in enumerate(
@@ -762,14 +658,8 @@ def run_bot():
         start=1
     ):
 
-        sector = SYMBOL_TO_SECTOR.get(
-            symbol,
-            "UNKNOWN"
-        )
-
         logger.info(
             f"🔍 Checking: {symbol} | "
-            f"Sector={sector} | "
             f"Progress={idx}/{len(all_data)}"
         )
 
@@ -785,7 +675,8 @@ def run_bot():
             alerts_sent += 1
 
             logger.info(
-                f"✅ ALERT SENT: {symbol}"
+                f"✅ ALERT SENT: "
+                f"{symbol}"
             )
 
     logger.info("=" * 80)
@@ -803,25 +694,37 @@ def run_bot():
 
 if __name__ == "__main__":
 
-    if not BOT_TOKEN or not CHAT_ID:
+    try:
 
-        logger.error(
-            "FATAL: BOT_TOKEN / CHAT_ID not set"
+        if not BOT_TOKEN or not CHAT_ID:
+
+            logger.error(
+                "❌ FATAL: BOT_TOKEN / CHAT_ID not set"
+            )
+
+            raise SystemExit(1)
+
+        logger.info("=" * 80)
+
+        logger.info(
+            "🚀 Bullish Institutional Bot Started"
         )
 
-        raise SystemExit(1)
+        logger.info(
+            f"⏰ IST Time: "
+            f"{datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}"
+        )
 
-    logger.info("=" * 80)
+        logger.info("=" * 80)
 
-    logger.info(
-        "🚀 Bullish Institutional Bot Started"
-    )
+        run_bot()
 
-    logger.info(
-        f"⏰ IST Time: "
-        f"{datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}"
-    )
+        logger.info(
+            "✅ BOT EXECUTION FINISHED"
+        )
 
-    logger.info("=" * 80)
+    except Exception:
 
-    run_bot()
+        logger.exception(
+            "❌ MAIN CRITICAL ERROR"
+        )
