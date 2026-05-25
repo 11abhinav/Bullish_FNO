@@ -417,13 +417,18 @@ def process_stock(symbol, stock):
 
 def run_bot():
 
-    log("🚀 CRON RUN STARTED")
+    log(
+        f"🚀 RUN STARTED | "
+        f"{datetime.now(IST).strftime('%H:%M:%S')}"
+    )
 
     if not is_market_open():
 
         log("⏰ Market closed")
 
         return
+
+    log("✅ Market hours active")
 
     log("📊 FETCH STARTED")
 
@@ -463,8 +468,8 @@ def run_bot():
                 traceback.print_exc()
 
     log(
-        f"📦 FETCH DONE | "
-        f"Valid={valid}"
+        f"📦 Stocks fetched: "
+        f"{valid}"
     )
 
     log("✅ CRON RUN FINISHED")
