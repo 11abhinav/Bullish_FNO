@@ -1,66 +1,66 @@
 # =========================================================
-# ADVANCED NSE MOMENTUM + FNO TELEGRAM BOT
-# SECTOR-AWARE SCORING EDITION
+# NSE FNO MOMENTUM BOT — STOCK-ONLY ALERTS v3
 # =========================================================
 #
 # WHAT'S NEW vs v2
 # ---------------------------------------------------------
+#  ✅ No sector pulse / sector scoring — purely stock-level
+#  ✅ Every qualifying stock gets its own detailed Telegram card
+#  ✅ Additional filters added:
+#       • FnO signal REQUIRED (price move alone not enough)
+#       • Minimum OI size gate (skip illiquid F&O contracts)
+#       • Near-day-high filter (price within 3% of day high)
+#       • 5-day momentum check (price > 5-day avg = uptrend)
+#       • Near 52-week high bonus (breakout zone confirmation)
+#       • Delivery + Volume convergence bonus (dual conviction)
+#       • Short covering BONUS over long buildup (stronger signal)
+#  ✅ Score cap raised to 120; gate kept at MIN_SCORE
+#  ✅ Each alert card shows every data point used in scoring
+#  ✅ Clean "WHY THIS PICK" section with all triggered reasons
 #
-# ✅ 10 sectors defined — each stock tagged to a sector
-# ✅ Sector score computed per run (breadth + avg move)
-# ✅ Sector bonus (0–30 pts) added to each stock's score
-# ✅ Sector pulse message sent first (which sectors are hot)
-# ✅ Each stock alert shows its sector + sector context
-# ✅ Sector breadth tracked: "3/8 Banking stocks signalling"
-# ✅ Only upside signals, top 5 picks, min score gate
-#
-# SCORING SYSTEM (max 130 pts = 100 stock + 30 sector bonus)
+# SCORING SYSTEM (max 120 pts)
 # ---------------------------------------------------------
 #
-# STOCK SCORE (0–100)
+# Price Action        max 30 pts
+#   +10  move > MOVE_T1 (0.8%)
+#   +10  move > MOVE_T2 (1.5%)
+#   +10  move > MOVE_T3 (2.5%)
 #
-#   Price Action      max 30 pts
-#     +10  move > 0.8%
-#     +10  move > 1.5%
-#     +10  move > 2.5%
+# FnO / OI Signals    max 45 pts
+#   +25  Short Covering  (OI↓ > 2% + Price↑)  ← strongest
+#   +15  Long Buildup    (OI↑ > 2% + Price↑)
+#   +10  OI change > 5%  (strong conviction, additive)
+#   +5   OI change > 2%  (moderate, additive if not above)
 #
-#   FnO Signals       max 40 pts
-#     +20  Short Covering  (OI↓ + Price↑)  ← strongest
-#     +15  Long Buildup    (OI↑ + Price↑)
-#     +10  OI change > 5%  (strong conviction)
-#     +5   OI change > 2%  (moderate)
+# Delivery            max 20 pts
+#   +20  delivery > 70%
+#   +15  delivery > 60%
+#   +10  delivery > 50%
 #
-#   Delivery          max 20 pts
-#     +20  delivery > 70%
-#     +15  delivery > 60%
-#     +10  delivery > 50%
+# Volume              max 10 pts
+#   +10  volume > 3x avg
+#   +7   volume > 2x avg
+#   +4   volume > 1.5x avg
 #
-#   Volume            max 10 pts
-#     +10  volume > 3x avg
-#     +7   volume > 2x avg
-#     +4   volume > 1.5x avg
+# Convergence Bonus   max 5 pts
+#   +5   delivery > 60% AND volume > 2x avg (dual conviction)
 #
-# SECTOR BONUS (0–30 pts, added to stock score)
+# Near Day-High Bonus max 5 pts
+#   +5   price within 1.5% of day high (holding breakout)
 #
-#   Sector breadth (stocks signalling / sector size)
-#     ≥ 60% of sector stocks signalling  →  +15 pts
-#     ≥ 40%                              →  +10 pts
-#     ≥ 25%                              →  +5  pts
+# 52-Week High Bonus  max 5 pts
+#   +5   price within 5% of 52-week high (breakout zone)
 #
-#   Sector avg move
-#     avg move > 1.5%  →  +10 pts
-#     avg move > 0.8%  →  +5  pts
-#
-#   Sector OI confirmation
-#     majority short covering in sector  →  +5 pts
+# HARD FILTERS (disqualify stock entirely if failed)
+#   • move_pct > 0 (upside only)
+#   • At least ONE FnO signal (OI change ≥ 2% either direction)
+#   • Minimum OI contracts ≥ MIN_OI_CONTRACTS
+#   • Price within 3% of day high (still near the top)
+#   • 5-day momentum: current price > 5-day close avg
 #
 # ALERT GATE
-#   Min score (after sector bonus) = MIN_SCORE (default 45)
-#   Max alerts per run = MAX_ALERTS (default 5)
-#
-# TELEGRAM MESSAGE FLOW
-#   1. Sector pulse — hot/warm/quiet sectors at a glance
-#   2. Top N stock picks — detailed cards with sector context
+#   Min score = MIN_SCORE (default 50)
+#   Max alerts = MAX_ALERTS (default 7)
 #
 # =========================================================
 
@@ -76,7 +76,6 @@ import yfinance as yf
 
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from collections import defaultdict
 
 # =========================================================
 # LOGGER
@@ -90,7 +89,6 @@ logging.basicConfig(
     force=True,
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-
 logger = logging.getLogger()
 
 
@@ -108,10 +106,11 @@ log("🚀 SCRIPT STARTED")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
 
-MIN_SCORE   = 45    # Minimum adjusted score (stock + sector bonus)
-MAX_ALERTS  = 5     # Top N picks to send
+MIN_SCORE        = 50     # Minimum score to trigger alert
+MAX_ALERTS       = 7      # Max stock alerts per run
+MIN_OI_CONTRACTS = 5000   # Minimum open interest (contracts) — skip illiquid
 
-# Price move thresholds (vs day open, upside only)
+# Price move thresholds vs day open (upside %)
 MOVE_T1, MOVE_T2, MOVE_T3 = 0.8, 1.5, 2.5
 
 # OI change % thresholds
@@ -120,16 +119,16 @@ OI_T1, OI_T2 = 2.0, 5.0
 # Delivery % thresholds
 DEL_T1, DEL_T2, DEL_T3 = 50.0, 60.0, 70.0
 
-# Volume vs 20-day avg
+# Volume vs 20-day avg multiples
 VOL_T1, VOL_T2, VOL_T3 = 1.5, 2.0, 3.0
 
-# Sector breadth thresholds (fraction of sector stocks signalling)
-BREADTH_T1, BREADTH_T2, BREADTH_T3 = 0.25, 0.40, 0.60
+# Near-day-high filter: price must be within this % of day high
+NEAR_HIGH_PCT = 3.0
 
-# Sector avg move thresholds
-SECT_MOVE_T1, SECT_MOVE_T2 = 0.8, 1.5
+# 52-week high bonus: price within this % of 52w high
+NEAR_52W_HIGH_PCT = 5.0
 
-MAX_WORKERS = 1     # Keep 1 to avoid Yahoo rate limits
+MAX_WORKERS = 1     # Keep 1 to avoid Yahoo Finance rate limits
 
 IST         = timezone(timedelta(hours=5, minutes=30))
 ALERT_START = (9, 15)
@@ -148,148 +147,110 @@ NSE_HEADERS = {
 }
 
 # =========================================================
-# SECTORS & WATCHLIST
+# WATCHLIST
+# Format: (NSE_SYMBOL, DISPLAY_SECTOR_LABEL, YF_OVERRIDE_or_None)
 # =========================================================
-#
-# Format: (NSE_SYMBOL, SECTOR, YF_OVERRIDE_or_None)
-#
-# Sectors:
-#   BANKING         — private + public banks
-#   PSU_FINANCE     — PFC, REC, JIOFIN etc.
-#   IT              — software
-#   INFRA_DEFENCE   — BEL, HAL, L&T, RVNL, MAZDOCK, COCHINSHIP
-#   POWER_ENERGY    — NTPC, TATAPOWER, JSWENERGY, POWERGRID, SUZLON
-#   OIL_GAS         — ONGC, IOC, BPCL, GAIL
-#   METALS          — TATASTEEL, JSWSTEEL, HINDALCO, HINDCOPPER
-#   PHARMA          — SUNPHARMA, DRREDDY, DIVISLAB, CIPLA
-#   NBFC_FINANCE    — BAJFINANCE, BAJAJFINSV, CHOLAFIN etc.
-#   AUTO            — MARUTI, M&M, EICHERMOT, TVSMOTOR, ASHOKLEY
-#   REALTY          — LODHA, DLF
-#   CONSUMER        — TITAN, TRENT, PIDILITIND, PVRINOX, VBL
-#   INFRA_MISC      — POLYCAB, KEI, INDUSTOWER, CGPOWER, IRB
 
 WATCHLIST = [
     # ── BANKING ─────────────────────────────────────────
-    ("SBIN",       "BANKING",       None),
-    ("HDFCBANK",   "BANKING",       None),
-    ("ICICIBANK",  "BANKING",       None),
-    ("AXISBANK",   "BANKING",       None),
-    ("KOTAKBANK",  "BANKING",       None),
-    ("BANKBARODA", "BANKING",       None),
-    ("CANBK",      "BANKING",       None),
-    ("UNIONBANK",  "BANKING",       None),
+    ("SBIN",       "🏦 Banking",             None),
+    ("HDFCBANK",   "🏦 Banking",             None),
+    ("ICICIBANK",  "🏦 Banking",             None),
+    ("AXISBANK",   "🏦 Banking",             None),
+    ("KOTAKBANK",  "🏦 Banking",             None),
+    ("BANKBARODA", "🏦 Banking",             None),
+    ("CANBK",      "🏦 Banking",             None),
+    ("UNIONBANK",  "🏦 Banking",             None),
 
     # ── PSU FINANCE ─────────────────────────────────────
-    ("PFC",        "PSU_FINANCE",   None),
-    ("RECLTD",     "PSU_FINANCE",   None),
-    ("JIOFIN",     "PSU_FINANCE",   None),
+    ("PFC",        "🏛️ PSU Finance",         None),
+    ("RECLTD",     "🏛️ PSU Finance",         None),
+    ("JIOFIN",     "🏛️ PSU Finance",         None),
 
     # ── IT ──────────────────────────────────────────────
-    ("INFY",       "IT",            None),
-    ("TCS",        "IT",            None),
-    ("WIPRO",      "IT",            None),
-    ("KPITTECH",   "IT",            None),
-    ("PERSISTENT", "IT",            None),
-    ("COFORGE",    "IT",            None),
-    ("TATATECH",   "IT",            None),
+    ("INFY",       "💻 IT",                  None),
+    ("TCS",        "💻 IT",                  None),
+    ("WIPRO",      "💻 IT",                  None),
+    ("KPITTECH",   "💻 IT",                  None),
+    ("PERSISTENT", "💻 IT",                  None),
+    ("COFORGE",    "💻 IT",                  None),
+    ("TATATECH",   "💻 IT",                  None),
 
     # ── INFRA / DEFENCE ─────────────────────────────────
-    ("LT",         "INFRA_DEFENCE", None),
-    ("BEL",        "INFRA_DEFENCE", None),
-    ("HAL",        "INFRA_DEFENCE", None),
-    ("RVNL",       "INFRA_DEFENCE", None),
-    ("MAZDOCK",    "INFRA_DEFENCE", None),
-    ("COCHINSHIP", "INFRA_DEFENCE", None),
+    ("LT",         "🛡️ Infra & Defence",     None),
+    ("BEL",        "🛡️ Infra & Defence",     None),
+    ("HAL",        "🛡️ Infra & Defence",     None),
+    ("RVNL",       "🛡️ Infra & Defence",     None),
+    ("MAZDOCK",    "🛡️ Infra & Defence",     None),
+    ("COCHINSHIP", "🛡️ Infra & Defence",     None),
 
     # ── POWER / ENERGY ──────────────────────────────────
-    ("NTPC",       "POWER_ENERGY",  None),
-    ("TATAPOWER",  "POWER_ENERGY",  None),
-    ("JSWENERGY",  "POWER_ENERGY",  None),
-    ("POWERGRID",  "POWER_ENERGY",  None),
-    ("SUZLON",     "POWER_ENERGY",  None),
-    ("ADANIENT",   "POWER_ENERGY",  None),
-    ("ADANIPORTS", "POWER_ENERGY",  None),
+    ("NTPC",       "⚡ Power & Energy",       None),
+    ("TATAPOWER",  "⚡ Power & Energy",       None),
+    ("JSWENERGY",  "⚡ Power & Energy",       None),
+    ("POWERGRID",  "⚡ Power & Energy",       None),
+    ("SUZLON",     "⚡ Power & Energy",       None),
+    ("ADANIENT",   "⚡ Power & Energy",       None),
+    ("ADANIPORTS", "⚡ Power & Energy",       None),
 
     # ── OIL & GAS ───────────────────────────────────────
-    ("ONGC",       "OIL_GAS",       None),
-    ("IOC",        "OIL_GAS",       None),
-    ("BPCL",       "OIL_GAS",       None),
-    ("GAIL",       "OIL_GAS",       None),
+    ("ONGC",       "🛢️ Oil & Gas",           None),
+    ("IOC",        "🛢️ Oil & Gas",           None),
+    ("BPCL",       "🛢️ Oil & Gas",           None),
+    ("GAIL",       "🛢️ Oil & Gas",           None),
 
     # ── METALS ──────────────────────────────────────────
-    ("TATASTEEL",  "METALS",        None),
-    ("JSWSTEEL",   "METALS",        None),
-    ("HINDALCO",   "METALS",        None),
-    ("HINDCOPPER", "METALS",        None),
+    ("TATASTEEL",  "⚙️ Metals",              None),
+    ("JSWSTEEL",   "⚙️ Metals",              None),
+    ("HINDALCO",   "⚙️ Metals",              None),
+    ("HINDCOPPER", "⚙️ Metals",              None),
 
     # ── PHARMA ──────────────────────────────────────────
-    ("SUNPHARMA",  "PHARMA",        None),
-    ("DRREDDY",    "PHARMA",        None),
-    ("DIVISLAB",   "PHARMA",        None),
-    ("CIPLA",      "PHARMA",        None),
+    ("SUNPHARMA",  "💊 Pharma",              None),
+    ("DRREDDY",    "💊 Pharma",              None),
+    ("DIVISLAB",   "💊 Pharma",              None),
+    ("CIPLA",      "💊 Pharma",              None),
 
     # ── NBFC / FINANCE ──────────────────────────────────
-    ("BAJFINANCE",  "NBFC_FINANCE", None),
-    ("BAJAJFINSV",  "NBFC_FINANCE", None),
-    ("CHOLAFIN",    "NBFC_FINANCE", None),
-    ("SHRIRAMFIN",  "NBFC_FINANCE", None),
-    ("MUTHOOTFIN",  "NBFC_FINANCE", None),
-    ("MANAPPURAM",  "NBFC_FINANCE", None),
+    ("BAJFINANCE",  "💰 NBFC & Finance",     None),
+    ("BAJAJFINSV",  "💰 NBFC & Finance",     None),
+    ("CHOLAFIN",    "💰 NBFC & Finance",     None),
+    ("SHRIRAMFIN",  "💰 NBFC & Finance",     None),
+    ("MUTHOOTFIN",  "💰 NBFC & Finance",     None),
+    ("MANAPPURAM",  "💰 NBFC & Finance",     None),
 
     # ── AUTO ────────────────────────────────────────────
-    ("MARUTI",     "AUTO",          None),
-    ("M&M",        "AUTO",          "MM.NS"),   # & breaks Yahoo
-    ("EICHERMOT",  "AUTO",          None),
-    ("TVSMOTOR",   "AUTO",          None),
-    ("ASHOKLEY",   "AUTO",          None),
-    ("TATAMTRDVR", "AUTO",          None),
+    ("MARUTI",     "🚗 Auto",                None),
+    ("M&M",        "🚗 Auto",                "MM.NS"),
+    ("EICHERMOT",  "🚗 Auto",                None),
+    ("TVSMOTOR",   "🚗 Auto",                None),
+    ("ASHOKLEY",   "🚗 Auto",                None),
+    ("TATAMTRDVR", "🚗 Auto",                None),
 
     # ── REALTY ──────────────────────────────────────────
-    ("LODHA",      "REALTY",        None),
-    ("DLF",        "REALTY",        None),
+    ("LODHA",      "🏗️ Realty",              None),
+    ("DLF",        "🏗️ Realty",              None),
 
-    # ── CONSUMER / DISCRETIONARY ────────────────────────
-    ("TITAN",      "CONSUMER",      None),
-    ("TRENT",      "CONSUMER",      None),
-    ("PIDILITIND", "CONSUMER",      None),
-    ("PVRINOX",    "CONSUMER",      None),
-    ("VBL",        "CONSUMER",      None),
+    # ── CONSUMER ────────────────────────────────────────
+    ("TITAN",      "🛍️ Consumer",            None),
+    ("TRENT",      "🛍️ Consumer",            None),
+    ("PIDILITIND", "🛍️ Consumer",            None),
+    ("PVRINOX",    "🛍️ Consumer",            None),
+    ("VBL",        "🛍️ Consumer",            None),
 
     # ── INFRA MISC ──────────────────────────────────────
-    ("POLYCAB",    "INFRA_MISC",    None),
-    ("KEI",        "INFRA_MISC",    None),
-    ("INDUSTOWER", "INFRA_MISC",    None),
-    ("CGPOWER",    "INFRA_MISC",    None),
-    ("IRB",        "INFRA_MISC",    None),
-    ("BHEL",       "INFRA_MISC",    None),
+    ("POLYCAB",    "🔌 Infra & Cap Goods",   None),
+    ("KEI",        "🔌 Infra & Cap Goods",   None),
+    ("INDUSTOWER", "🔌 Infra & Cap Goods",   None),
+    ("CGPOWER",    "🔌 Infra & Cap Goods",   None),
+    ("IRB",        "🔌 Infra & Cap Goods",   None),
+    ("BHEL",       "🔌 Infra & Cap Goods",   None),
 ]
 
-log(f"📊 Watchlist Loaded: {len(WATCHLIST)} stocks across sectors")
-
-# Pre-build sector size map for breadth calculations
-SECTOR_SIZES = defaultdict(int)
-for _, sector, _ in WATCHLIST:
-    SECTOR_SIZES[sector] += 1
-
-# Human-readable sector names for messages
-SECTOR_DISPLAY = {
-    "BANKING":       "🏦 Banking",
-    "PSU_FINANCE":   "🏛️ PSU Finance",
-    "IT":            "💻 IT",
-    "INFRA_DEFENCE": "🛡️ Infra & Defence",
-    "POWER_ENERGY":  "⚡ Power & Energy",
-    "OIL_GAS":       "🛢️ Oil & Gas",
-    "METALS":        "⚙️ Metals",
-    "PHARMA":        "💊 Pharma",
-    "NBFC_FINANCE":  "💰 NBFC & Finance",
-    "AUTO":          "🚗 Auto",
-    "REALTY":        "🏗️ Realty",
-    "CONSUMER":      "🛍️ Consumer",
-    "INFRA_MISC":    "🔌 Infra & Capital Goods",
-}
+log(f"📊 Watchlist: {len(WATCHLIST)} stocks loaded")
 
 # =========================================================
-# MARKET HOURS
+# MARKET HOURS CHECK
 # =========================================================
 
 def is_market_open():
@@ -309,11 +270,11 @@ def send_telegram(msg):
         r = requests.post(
             url,
             data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
-            timeout=20
+            timeout=20,
         )
-        log(f"📨 Telegram={r.status_code}")
+        log(f"📨 Telegram status={r.status_code}")
         if r.status_code != 200:
-            log(f"⚠️ Telegram error: {r.text[:200]}")
+            log(f"⚠️ Telegram error body: {r.text[:200]}")
     except Exception:
         traceback.print_exc()
 
@@ -334,14 +295,14 @@ def get_nse_session():
         s.get("https://www.nseindia.com", timeout=10)
         time.sleep(1)
         _nse_session = s
-        log("✅ NSE session initialized")
+        log("✅ NSE session ready")
     except Exception:
-        log("⚠️ NSE session init failed")
+        log("⚠️ NSE session init failed — FnO/delivery data may be unavailable")
         _nse_session = None
     return _nse_session
 
 # =========================================================
-# NSE FNO DATA
+# NSE FnO DATA
 # =========================================================
 
 def fetch_nse_fno(symbol):
@@ -355,10 +316,10 @@ def fetch_nse_fno(symbol):
             return {}
         data   = r.json()
         stocks = data.get("stocks", [])
-        fut    = next(
+        fut = next(
             (row for row in stocks
              if row.get("metadata", {}).get("instrumentType") == "Stock Futures"),
-            None
+            None,
         )
         if not fut:
             return {}
@@ -367,10 +328,12 @@ def fetch_nse_fno(symbol):
         oi        = tradeinfo.get("openInterest", 0) or 0
         oi_chg    = tradeinfo.get("changeinOpenInterest", 0) or 0
         lot_size  = meta.get("lotSize", 0) or 0
+
         oi_chg_pct = 0.0
         prev_oi = oi - oi_chg
         if prev_oi > 0:
             oi_chg_pct = (oi_chg / prev_oi) * 100
+
         return {
             "oi":         oi,
             "oi_chg":     oi_chg,
@@ -395,9 +358,8 @@ def fetch_nse_delivery(symbol):
             return {}
         data  = r.json()
         trade = data.get("tradeInfo", {})
-        delivery_pct = trade.get("deliveryToTradedQuantity", 0.0)
         try:
-            delivery_pct = float(delivery_pct)
+            delivery_pct = float(trade.get("deliveryToTradedQuantity", 0.0) or 0.0)
         except (ValueError, TypeError):
             delivery_pct = 0.0
         return {
@@ -409,15 +371,24 @@ def fetch_nse_delivery(symbol):
         return {}
 
 # =========================================================
-# YAHOO FINANCE — PRICE DATA
+# YAHOO FINANCE — PRICE + HISTORICAL DATA
 # =========================================================
 
 def fetch_price(symbol, yf_sym_override=None):
+    """
+    Returns intraday price data + 20-day avg volume + 5-day close avg + 52w high.
+    Returns None if:
+      - No data
+      - Price move is negative / flat (upside-only filter)
+      - Price is more than NEAR_HIGH_PCT below the day high (soft filter here,
+        hard gate applied in process_stock)
+    """
     try:
         time.sleep(random.uniform(1.5, 3.0))
 
         yf_sym = yf_sym_override or f"{symbol}.NS"
 
+        # ── Intraday (5-min bars) ─────────────────────────
         df = yf.download(
             yf_sym,
             period="1d",
@@ -439,224 +410,248 @@ def fetch_price(symbol, yf_sym_override=None):
         day_low    = float(df["Low"].min())
         intra_vol  = int(df["Volume"].sum())
 
-        if day_open <= 0:
+        if day_open <= 0 or last_price <= 0:
             return None
 
         move_pct = ((last_price - day_open) / day_open) * 100
 
-        # UPSIDE ONLY — reject negative/flat
+        # Upside-only
         if move_pct <= 0:
             return None
 
-        # 20-day avg volume
-        avg_volume = 0
+        # ── Daily history (25 days) ───────────────────────
+        avg_volume   = 0
+        five_day_avg = 0.0
+        week_52_high = 0.0
+
         try:
             df_d = yf.download(
-                yf_sym, period="25d", interval="1d",
-                progress=False, auto_adjust=True, threads=False,
+                yf_sym,
+                period="25d",
+                interval="1d",
+                progress=False,
+                auto_adjust=True,
+                threads=False,
             )
             if not df_d.empty:
                 if isinstance(df_d.columns, pd.MultiIndex):
                     df_d.columns = df_d.columns.get_level_values(0)
-                avg_volume = int(df_d["Volume"].iloc[:-1].tail(20).mean())
+                avg_volume   = int(df_d["Volume"].iloc[:-1].tail(20).mean())
+                five_day_avg = float(df_d["Close"].iloc[:-1].tail(5).mean())
+        except Exception:
+            pass
+
+        # ── 52-week high ──────────────────────────────────
+        try:
+            df_52 = yf.download(
+                yf_sym,
+                period="52wk",
+                interval="1d",
+                progress=False,
+                auto_adjust=True,
+                threads=False,
+            )
+            if not df_52.empty:
+                if isinstance(df_52.columns, pd.MultiIndex):
+                    df_52.columns = df_52.columns.get_level_values(0)
+                week_52_high = float(df_52["High"].max())
         except Exception:
             pass
 
         return {
-            "symbol":     symbol,
-            "price":      last_price,
-            "day_open":   day_open,
-            "day_high":   day_high,
-            "day_low":    day_low,
-            "move_pct":   move_pct,
-            "intra_vol":  intra_vol,
-            "avg_volume": avg_volume,
+            "symbol":        symbol,
+            "price":         last_price,
+            "day_open":      day_open,
+            "day_high":      day_high,
+            "day_low":       day_low,
+            "move_pct":      move_pct,
+            "intra_vol":     intra_vol,
+            "avg_volume":    avg_volume,
+            "five_day_avg":  five_day_avg,
+            "week_52_high":  week_52_high,
         }
 
     except Exception:
         err = traceback.format_exc()
         if "YFRateLimitError" in err:
-            log(f"⏳ {symbol}: Rate limited")
+            log(f"⏳ {symbol}: Rate limited — skipping")
             return None
         if any(x in err for x in ["possibly delisted", "404", "No data found"]):
             return None
-        log(f"❌ {symbol}: fetch error")
+        log(f"❌ {symbol}: Price fetch error")
         return None
 
 # =========================================================
-# STOCK SCORING ENGINE (0–100)
+# HARD FILTERS  (applied before scoring)
+# =========================================================
+
+def passes_hard_filters(symbol, price_data, fno_data):
+    """
+    Returns (passed: bool, reason: str)
+    All must pass for the stock to be scored.
+    """
+    move_pct     = price_data["move_pct"]
+    last_price   = price_data["price"]
+    day_high     = price_data["day_high"]
+    five_day_avg = price_data["five_day_avg"]
+    oi           = fno_data.get("oi", 0)
+    oi_chg_pct   = abs(fno_data.get("oi_chg_pct", 0))
+
+    # 1. Upside only (already pre-filtered in fetch_price, but double-check)
+    if move_pct <= 0:
+        return False, "No upside move"
+
+    # 2. FnO signal required — OI must be moving meaningfully
+    if oi_chg_pct < OI_T1:
+        return False, f"Weak OI change ({oi_chg_pct:.1f}% < {OI_T1}%)"
+
+    # 3. Minimum OI for liquidity
+    if oi > 0 and oi < MIN_OI_CONTRACTS:
+        return False, f"Low OI ({oi:,} contracts)"
+
+    # 4. Price must be near day high (not fading from peak)
+    pct_from_high = ((day_high - last_price) / day_high) * 100
+    if pct_from_high > NEAR_HIGH_PCT:
+        return False, f"Fading from high ({pct_from_high:.1f}% below day high)"
+
+    # 5. 5-day momentum: price above 5-day avg close (uptrend confirmation)
+    if five_day_avg > 0 and last_price < five_day_avg:
+        return False, f"Below 5-day avg (₹{five_day_avg:.2f})"
+
+    return True, "OK"
+
+# =========================================================
+# SCORING ENGINE  (0–120 pts)
 # =========================================================
 
 def score_stock(price_data, fno_data, delivery_data):
     """
-    Returns (score 0–100, breakdown dict, signals list).
-    All signals are upside-only.
+    Returns (score: int, breakdown: dict, signals: list of (emoji, name, detail))
     """
     score     = 0
     breakdown = {}
     signals   = []
 
-    move_pct     = price_data.get("move_pct", 0)
-    intra_vol    = price_data.get("intra_vol", 0)
-    avg_volume   = price_data.get("avg_volume", 0)
+    move_pct     = price_data["move_pct"]
+    last_price   = price_data["price"]
+    day_high     = price_data["day_high"]
+    week_52_high = price_data["week_52_high"]
+    intra_vol    = price_data["intra_vol"]
+    avg_volume   = price_data["avg_volume"]
+
     oi_chg_pct   = fno_data.get("oi_chg_pct", 0)
     delivery_pct = delivery_data.get("delivery_pct", 0)
     vol_ratio    = (intra_vol / avg_volume) if avg_volume > 0 else 0
 
-    # ── Price action (max 30) ─────────────────────────────
+    # ── 1. Price Action  (max 30 pts) ─────────────────────
     pp = 0
     if move_pct >= MOVE_T1: pp += 10
     if move_pct >= MOVE_T2: pp += 10
     if move_pct >= MOVE_T3: pp += 10
     score += pp
     breakdown["price"] = pp
-    if pp > 0:
-        signals.append(("📈", "PRICE BREAKOUT", f"+{move_pct:.2f}% above day open"))
+    if pp >= 10:
+        signals.append(("📈", "PRICE BREAKOUT",
+                         f"+{move_pct:.2f}% above day open"))
 
-    # ── FnO / OI signals (max 40) ─────────────────────────
+    # ── 2. FnO / OI  (max 45 pts) ─────────────────────────
     fp = 0
+    fno_type = ""
     if move_pct > 0 and oi_chg_pct < -OI_T1:
-        fp += 20
+        fp += 25
+        fno_type = "SHORT_COVERING"
         signals.append(("🔄", "SHORT COVERING",
-                         "Shorts exiting as price rises"))
+                         f"OI {oi_chg_pct:+.1f}% — shorts exiting as price rises"))
     elif move_pct > 0 and oi_chg_pct > OI_T1:
         fp += 15
+        fno_type = "LONG_BUILDUP"
         signals.append(("🚀", "LONG BUILDUP",
-                         "Fresh longs entering"))
+                         f"OI {oi_chg_pct:+.1f}% — fresh longs entering"))
+
+    # Additive OI conviction bonus
     if abs(oi_chg_pct) >= OI_T2:
         fp += 10
-        signals.append(("💪", "STRONG OI MOVE",
-                         f"OI {oi_chg_pct:+.1f}% — high conviction"))
+        signals.append(("💪", "STRONG OI CONVICTION",
+                         f"OI moved {abs(oi_chg_pct):.1f}% — high certainty"))
     elif abs(oi_chg_pct) >= OI_T1:
         fp += 5
-    score += fp
-    breakdown["fno"] = fp
 
-    # ── Delivery (max 20) ─────────────────────────────────
+    score += fp
+    breakdown["fno"]      = fp
+    breakdown["fno_type"] = fno_type
+
+    # ── 3. Delivery  (max 20 pts) ─────────────────────────
     dp = 0
     if delivery_pct >= DEL_T3:
         dp = 20
         signals.append(("📦", "HIGH DELIVERY",
-                         f"{delivery_pct:.1f}% — strong cash conviction"))
+                         f"{delivery_pct:.1f}% — strong cash market conviction"))
     elif delivery_pct >= DEL_T2:
         dp = 15
         signals.append(("📦", "GOOD DELIVERY",
                          f"{delivery_pct:.1f}% delivery"))
     elif delivery_pct >= DEL_T1:
         dp = 10
+        signals.append(("📦", "MODERATE DELIVERY",
+                         f"{delivery_pct:.1f}% delivery"))
     score += dp
     breakdown["delivery"] = dp
 
-    # ── Volume (max 10) ───────────────────────────────────
+    # ── 4. Volume  (max 10 pts) ───────────────────────────
     vp = 0
     if vol_ratio >= VOL_T3:
         vp = 10
         signals.append(("🔊", "VOLUME EXPLOSION",
-                         f"{vol_ratio:.1f}x avg"))
+                         f"{vol_ratio:.1f}x 20-day avg"))
     elif vol_ratio >= VOL_T2:
         vp = 7
         signals.append(("🔊", "VOLUME SURGE",
-                         f"{vol_ratio:.1f}x avg"))
+                         f"{vol_ratio:.1f}x 20-day avg"))
     elif vol_ratio >= VOL_T1:
         vp = 4
-
+        signals.append(("🔊", "ELEVATED VOLUME",
+                         f"{vol_ratio:.1f}x 20-day avg"))
     score += vp
     breakdown["volume"] = vp
-    breakdown["total"]  = score
+
+    # ── 5. Convergence Bonus  (max 5 pts) ─────────────────
+    cp = 0
+    if delivery_pct >= DEL_T2 and vol_ratio >= VOL_T2:
+        cp = 5
+        signals.append(("🎯", "DUAL CONVICTION",
+                         "High delivery + high volume — cash + derivatives aligned"))
+    score += cp
+    breakdown["convergence"] = cp
+
+    # ── 6. Near Day-High Bonus  (max 5 pts) ───────────────
+    hp = 0
+    pct_from_high = ((day_high - last_price) / day_high) * 100
+    if pct_from_high <= 1.5:
+        hp = 5
+        signals.append(("🏔️", "HOLDING DAY HIGH",
+                         f"Price within {pct_from_high:.1f}% of high — breakout intact"))
+    score += hp
+    breakdown["near_high"] = hp
+
+    # ── 7. 52-Week High Bonus  (max 5 pts) ────────────────
+    wp = 0
+    if week_52_high > 0:
+        pct_from_52w = ((week_52_high - last_price) / week_52_high) * 100
+        if pct_from_52w <= NEAR_52W_HIGH_PCT:
+            wp = 5
+            signals.append(("🌟", "52-WEEK HIGH ZONE",
+                             f"Within {pct_from_52w:.1f}% of 52-week high — breakout territory"))
+    score += wp
+    breakdown["near_52w"] = wp
+
+    breakdown["total"] = score
     return score, breakdown, signals
-
-# =========================================================
-# SECTOR SCORING ENGINE (0–30 bonus pts per sector)
-# =========================================================
-
-def compute_sector_scores(all_results):
-    """
-    all_results: list of result dicts from process_stock.
-    Returns:
-        sector_scores: dict sector → bonus_pts (0–30)
-        sector_stats:  dict sector → {count, total, avg_move,
-                                       short_covering_count, stocks}
-    """
-    # Group results by sector
-    by_sector = defaultdict(list)
-    for r in all_results:
-        by_sector[r["sector"]].append(r)
-
-    sector_scores = {}
-    sector_stats  = {}
-
-    for sector, results in by_sector.items():
-        total_in_sector = SECTOR_SIZES[sector]
-        count_signalling = len(results)  # stocks that passed price filter
-
-        if count_signalling == 0:
-            sector_scores[sector] = 0
-            sector_stats[sector]  = {
-                "count": 0, "total": total_in_sector,
-                "avg_move": 0, "short_covering_count": 0,
-                "bonus": 0, "stocks": [],
-            }
-            continue
-
-        breadth = count_signalling / total_in_sector
-        avg_move = sum(r["price_data"]["move_pct"] for r in results) / count_signalling
-        short_covering_count = sum(
-            1 for r in results
-            if r["fno_data"].get("oi_chg_pct", 0) < -OI_T1
-        )
-
-        bonus = 0
-
-        # Breadth bonus (max 15 pts)
-        if breadth >= BREADTH_T3:
-            bonus += 15
-        elif breadth >= BREADTH_T2:
-            bonus += 10
-        elif breadth >= BREADTH_T1:
-            bonus += 5
-
-        # Sector avg move bonus (max 10 pts)
-        if avg_move >= SECT_MOVE_T2:
-            bonus += 10
-        elif avg_move >= SECT_MOVE_T1:
-            bonus += 5
-
-        # OI confirmation bonus (max 5 pts)
-        if count_signalling > 0:
-            sc_ratio = short_covering_count / count_signalling
-            if sc_ratio >= 0.5:     # majority short covering in sector
-                bonus += 5
-
-        sector_scores[sector] = min(bonus, 30)  # cap at 30
-        sector_stats[sector] = {
-            "count":                 count_signalling,
-            "total":                 total_in_sector,
-            "avg_move":              avg_move,
-            "short_covering_count":  short_covering_count,
-            "bonus":                 min(bonus, 30),
-            "stocks":                [r["symbol"] for r in results],
-        }
-
-    return sector_scores, sector_stats
-
-# =========================================================
-# SECTOR HEAT LABEL
-# =========================================================
-
-def sector_heat_label(bonus, avg_move, breadth):
-    if bonus >= 20:
-        return "🔥 HOT"
-    if bonus >= 10:
-        return "♨️ WARM"
-    if bonus > 0:
-        return "🟡 ACTIVE"
-    return "⚪ QUIET"
 
 # =========================================================
 # VISUAL AIDS
 # =========================================================
 
-def score_bar(score, max_score=130):
+def score_bar(score, max_score=120):
     pct    = min(score / max_score, 1.0)
     filled = round(pct * 10)
     empty  = 10 - filled
@@ -664,36 +659,49 @@ def score_bar(score, max_score=130):
 
 
 def score_label(score):
-    if score >= 95:
-        return "🔥 EXCEPTIONAL"
-    if score >= 70:
-        return "🔥 STRONG"
-    if score >= 55:
-        return "✅ GOOD"
-    if score >= 45:
-        return "🟡 MODERATE"
+    if score >= 100: return "🔥🔥 EXCEPTIONAL"
+    if score >= 80:  return "🔥 VERY STRONG"
+    if score >= 65:  return "✅ STRONG"
+    if score >= 50:  return "🟡 MODERATE"
     return "⚪ WEAK"
 
+
+def fno_badge(fno_type):
+    return {
+        "SHORT_COVERING": "🔄 Short Covering",
+        "LONG_BUILDUP":   "🚀 Long Buildup",
+    }.get(fno_type, "📊 FnO Active")
+
 # =========================================================
-# PROCESS ONE STOCK (raw result, no alert yet)
+# PROCESS ONE STOCK
 # =========================================================
 
-def process_stock(symbol, sector, yf_override):
+def process_stock(symbol, sector_label, yf_override):
     try:
+        # Step 1: Price data
         price_data = fetch_price(symbol, yf_override)
         if not price_data:
             return None
 
-        fno_data      = fetch_nse_fno(symbol)
+        # Step 2: FnO data
+        fno_data = fetch_nse_fno(symbol)
+
+        # Step 3: Hard filters
+        passed, reason = passes_hard_filters(symbol, price_data, fno_data)
+        if not passed:
+            log(f"⛔ {symbol}: filtered — {reason}")
+            return None
+
+        # Step 4: Delivery data
         delivery_data = fetch_nse_delivery(symbol)
 
+        # Step 5: Score
         stock_score, breakdown, signals = score_stock(
             price_data, fno_data, delivery_data
         )
 
         log(
-            f"📊 {symbol} [{sector}] | "
-            f"+{price_data['move_pct']:.2f}% | "
+            f"📊 {symbol} | +{price_data['move_pct']:.2f}% | "
             f"OI={fno_data.get('oi_chg_pct', 0):+.1f}% | "
             f"Del={delivery_data.get('delivery_pct', 0):.0f}% | "
             f"Score={stock_score}"
@@ -701,9 +709,8 @@ def process_stock(symbol, sector, yf_override):
 
         return {
             "symbol":        symbol,
-            "sector":        sector,
-            "stock_score":   stock_score,
-            "adjusted_score": stock_score,   # sector bonus added later
+            "sector_label":  sector_label,
+            "score":         stock_score,
             "breakdown":     breakdown,
             "signals":       signals,
             "price_data":    price_data,
@@ -716,59 +723,15 @@ def process_stock(symbol, sector, yf_override):
         return None
 
 # =========================================================
-# SECTOR PULSE MESSAGE
+# BUILD TELEGRAM ALERT CARD
 # =========================================================
 
-def build_sector_pulse(sector_stats, ist_now):
-    """
-    Single message showing which sectors are hot this run.
-    Sorted by bonus pts descending.
-    Only shows sectors with at least 1 signalling stock.
-    """
-    active = [
-        (s, info) for s, info in sector_stats.items()
-        if info["count"] > 0
-    ]
-    active.sort(key=lambda x: x[1]["bonus"], reverse=True)
-
-    if not active:
-        return None
-
-    lines = [
-        f"📡 <b>SECTOR PULSE</b>  |  {ist_now} IST",
-        "━" * 24,
-    ]
-
-    for sector, info in active:
-        display  = SECTOR_DISPLAY.get(sector, sector)
-        breadth  = info["count"] / info["total"]
-        avg_move = info["avg_move"]
-        bonus    = info["bonus"]
-        heat     = sector_heat_label(bonus, avg_move, breadth)
-
-        lines.append(
-            f"{heat}  <b>{display}</b>\n"
-            f"   {info['count']}/{info['total']} stocks up  "
-            f"|  Avg +{avg_move:.2f}%  "
-            f"|  Bonus +{bonus}pts"
-        )
-
-    lines.append("━" * 24)
-    lines.append(f"🔎 Scanned {len(WATCHLIST)} stocks")
-    return "\n".join(lines)
-
-# =========================================================
-# STOCK ALERT MESSAGE
-# =========================================================
-
-def build_stock_message(rank, result, sector_stats):
-    pd_   = result["price_data"]
-    fd    = result["fno_data"]
-    dd    = result["delivery_data"]
-    sector = result["sector"]
-    score  = result["adjusted_score"]
-    bd     = result["breakdown"]
-    sigs   = result["signals"]
+def build_alert_card(rank, result):
+    pd_  = result["price_data"]
+    fd   = result["fno_data"]
+    dd   = result["delivery_data"]
+    bd   = result["breakdown"]
+    sigs = result["signals"]
 
     sym          = pd_["symbol"]
     price        = pd_["price"]
@@ -778,86 +741,93 @@ def build_stock_message(rank, result, sector_stats):
     day_low      = pd_["day_low"]
     intra_vol    = pd_["intra_vol"]
     avg_volume   = pd_["avg_volume"]
+    five_day_avg = pd_["five_day_avg"]
+    week_52_high = pd_["week_52_high"]
 
     oi           = fd.get("oi", 0)
+    oi_chg       = fd.get("oi_chg", 0)
     oi_chg_pct   = fd.get("oi_chg_pct", 0)
     lot_size     = fd.get("lot_size", 0)
     delivery_pct = dd.get("delivery_pct", 0)
 
-    vol_ratio    = (intra_vol / avg_volume) if avg_volume > 0 else 0
-    oi_arrow     = "↑" if oi_chg_pct > 0 else "↓" if oi_chg_pct < 0 else "→"
+    vol_ratio     = (intra_vol / avg_volume) if avg_volume > 0 else 0
+    pct_from_high = ((day_high - price) / day_high) * 100 if day_high > 0 else 0
+    pct_from_52w  = ((week_52_high - price) / week_52_high) * 100 if week_52_high > 0 else 0
 
-    # Sector context line
-    st           = sector_stats.get(sector, {})
-    sect_display = SECTOR_DISPLAY.get(sector, sector)
-    sect_count   = st.get("count", 0)
-    sect_total   = st.get("total", 0)
-    sect_move    = st.get("avg_move", 0)
-    sect_bonus   = st.get("bonus", 0)
-    sect_heat    = sector_heat_label(
-        sect_bonus,
-        sect_move,
-        sect_count / sect_total if sect_total else 0
-    )
+    oi_dir   = "↑ Building" if oi_chg_pct > 0 else "↓ Unwinding"
+    fno_type = bd.get("fno_type", "")
+    ist_now  = datetime.now(IST).strftime("%d %b %Y  %H:%M:%S IST")
 
-    # Score breakdown line
-    pts_line = (
-        f"  Price={bd.get('price',0)}  "
-        f"FnO={bd.get('fno',0)}  "
-        f"Del={bd.get('delivery',0)}  "
-        f"Vol={bd.get('volume',0)}  "
-        f"Sector=+{sect_bonus}"
-    )
-
+    # Signals block
     sig_lines = "\n".join(
         f"  {e} <b>{n}</b>: {d}" for e, n, d in sigs
-    ) or "  📊 Meets momentum criteria"
+    ) or "  📊 Base momentum criteria met"
 
-    ist_now = datetime.now(IST).strftime("%H:%M:%S")
+    # Score breakdown line
+    breakdown_line = (
+        f"Price +{bd.get('price',0)} | "
+        f"FnO +{bd.get('fno',0)} | "
+        f"Del +{bd.get('delivery',0)} | "
+        f"Vol +{bd.get('volume',0)} | "
+        f"Conv +{bd.get('convergence',0)} | "
+        f"High +{bd.get('near_high',0)} | "
+        f"52W +{bd.get('near_52w',0)}"
+    )
 
     msg = (
-        f"{'━' * 24}\n"
-        f"#{rank}  <b>{sym}</b>  📈 <b>+{move_pct:.2f}%</b>\n"
-        f"{'━' * 24}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏅 <b>#{rank}  {sym}</b>  —  {result['sector_label']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"\n"
-        f"⭐ <b>Score: {score_bar(score)}</b>\n"
-        f"   {score_label(score)}\n"
-        f"<code>{pts_line}</code>\n"
+        f"⭐ <b>Score: {score_bar(result['score'])}</b>\n"
+        f"   {score_label(result['score'])}\n"
+        f"<code>{breakdown_line}</code>\n"
         f"\n"
-        f"🏷️ <b>Sector:</b> {sect_display}  {sect_heat}\n"
-        f"   {sect_count}/{sect_total} sector stocks up  "
-        f"|  Sector avg +{sect_move:.2f}%\n"
-        f"\n"
-        f"💰 <b>Price</b>:       ₹{price:.2f}\n"
-        f"🔓 <b>Day Open</b>:    ₹{day_open:.2f}\n"
-        f"⬆️ <b>Day High</b>:    ₹{day_high:.2f}\n"
-        f"⬇️ <b>Day Low</b>:     ₹{day_low:.2f}\n"
-        f"\n"
-        f"📊 <b>OI</b>:           {oi:,}" if oi else f"📊 <b>OI</b>:           N/A"
+        f"━━ 📌 PRICE ━━\n"
+        f"  💰 LTP:          ₹{price:.2f}  (<b>+{move_pct:.2f}%</b>)\n"
+        f"  🔓 Day Open:     ₹{day_open:.2f}\n"
+        f"  ⬆️ Day High:     ₹{day_high:.2f}  ({pct_from_high:.1f}% from now)\n"
+        f"  ⬇️ Day Low:      ₹{day_low:.2f}\n"
+        f"  📐 5-Day Avg:    ₹{five_day_avg:.2f}\n"
     )
 
-    # Append rest of fields (workaround for conditional f-string above)
+    if week_52_high > 0:
+        msg += f"  🌟 52W High:     ₹{week_52_high:.2f}  ({pct_from_52w:.1f}% below)\n"
+
+    msg += f"\n━━ 📊 FnO / OI ━━\n"
+
+    if oi > 0:
+        msg += (
+            f"  📋 OI:           {oi:,} contracts\n"
+            f"  🔁 OI Change:    {oi_chg:+,}  ({oi_chg_pct:+.2f}%)  {oi_dir}\n"
+            f"  🏷️ Signal:       {fno_badge(fno_type)}\n"
+        )
+        if lot_size > 0:
+            msg += f"  📦 Lot Size:     {lot_size:,}\n"
+    else:
+        msg += "  ⚠️ OI data unavailable\n"
+
+    msg += f"\n━━ 📦 DELIVERY & VOLUME ━━\n"
+
+    if delivery_pct > 0:
+        msg += f"  📦 Delivery:     {delivery_pct:.1f}%\n"
+    else:
+        msg += "  📦 Delivery:     N/A\n"
+
+    if avg_volume > 0:
+        msg += (
+            f"  🔊 Intraday Vol: {intra_vol:,}\n"
+            f"  📏 20-Day Avg:   {avg_volume:,}\n"
+            f"  📊 Vol Ratio:    {vol_ratio:.2f}x\n"
+        )
+    else:
+        msg += f"  🔊 Volume:       {intra_vol:,} (avg unavailable)\n"
+
     msg += (
-        f"\n"
-        f"🔁 <b>OI Change</b>:   "
-        f"{oi_chg_pct:+.2f}% {oi_arrow}" if oi_chg_pct else "\n🔁 <b>OI Change</b>:   N/A"
-    )
-    msg += (
-        f"\n📦 <b>Delivery</b>:    {delivery_pct:.1f}%"
-        if delivery_pct else "\n📦 <b>Delivery</b>:    N/A"
-    )
-    msg += (
-        f"\n🔊 <b>Volume</b>:      {vol_ratio:.1f}x avg"
-        if vol_ratio else "\n🔊 <b>Volume</b>:      N/A"
-    )
-    msg += (
-        f"\n📐 <b>Lot Size</b>:    {lot_size:,}"
-        if lot_size else "\n📐 <b>Lot Size</b>:    N/A"
-    )
-    msg += (
-        f"\n\n🎯 <b>WHY THIS PICK</b>:\n"
+        f"\n━━ 🎯 WHY THIS PICK ━━\n"
         f"{sig_lines}\n"
-        f"\n🕐 {ist_now} IST"
+        f"\n"
+        f"🕐 {ist_now}"
     )
 
     return msg
@@ -868,16 +838,14 @@ def build_stock_message(rank, result, sector_stats):
 
 def run_bot():
     ist_now = datetime.now(IST).strftime("%H:%M:%S")
-    log(f"🚀 RUN STARTED | {ist_now}")
+    log(f"🚀 RUN STARTED | {ist_now} IST")
 
     if not is_market_open():
-        log("⏰ Market closed — exiting")
+        log("⏰ Outside market hours — skipping run")
         return
 
-    log("✅ Market hours active")
+    log("✅ Market hours active — starting scan")
     get_nse_session()
-
-    log("📊 SCANNING ALL STOCKS")
 
     raw_results = []
 
@@ -893,63 +861,34 @@ def run_bot():
                 if result:
                     raw_results.append(result)
             except Exception:
-                log(f"❌ {sym}: Thread error")
+                log(f"❌ {sym}: thread exception")
                 traceback.print_exc()
 
-    log(f"📦 Stocks with upside move: {len(raw_results)}")
+    log(f"📦 Stocks passing hard filters: {len(raw_results)}")
 
-    # ── Compute sector scores ─────────────────────────────
-    sector_scores, sector_stats = compute_sector_scores(raw_results)
-
-    log("📊 SECTOR SCORES:")
-    for sector, bonus in sorted(sector_scores.items(),
-                                key=lambda x: -x[1]):
-        st = sector_stats[sector]
-        if st["count"] > 0:
-            log(
-                f"  {SECTOR_DISPLAY.get(sector, sector)}: "
-                f"bonus={bonus}  "
-                f"{st['count']}/{st['total']} up  "
-                f"avg +{st['avg_move']:.2f}%"
-            )
-
-    # ── Apply sector bonus to each result ─────────────────
-    for r in raw_results:
-        bonus = sector_scores.get(r["sector"], 0)
-        r["adjusted_score"] = r["stock_score"] + bonus
-
-    # ── Filter by minimum adjusted score ──────────────────
+    # Filter by minimum score
     candidates = [
-        r for r in raw_results
-        if r["adjusted_score"] >= MIN_SCORE and r["signals"]
+        r for r in raw_results if r["score"] >= MIN_SCORE
     ]
 
-    log(f"🏆 Candidates after score gate (≥{MIN_SCORE}): {len(candidates)}")
+    log(f"🏆 Candidates above score gate (≥{MIN_SCORE}): {len(candidates)}")
 
     if not candidates:
-        log("💤 No qualifying picks this run")
+        log("💤 No qualifying picks this run — no alerts sent")
         return
 
-    # ── Sort by adjusted score, take top N ────────────────
-    top_picks = sorted(
-        candidates, key=lambda x: x["adjusted_score"], reverse=True
-    )[:MAX_ALERTS]
+    # Sort by score descending, take top N
+    top_picks = sorted(candidates, key=lambda x: x["score"], reverse=True)[:MAX_ALERTS]
 
-    log(f"📨 Sending sector pulse + {len(top_picks)} stock alerts")
+    log(f"📨 Sending {len(top_picks)} stock alerts")
 
-    # ── 1. Sector pulse ───────────────────────────────────
-    pulse_msg = build_sector_pulse(sector_stats, ist_now)
-    if pulse_msg:
-        send_telegram(pulse_msg)
-        time.sleep(1)
-
-    # ── 2. Individual stock alerts ────────────────────────
     for rank, pick in enumerate(top_picks, 1):
-        msg = build_stock_message(rank, pick, sector_stats)
+        msg = build_alert_card(rank, pick)
         send_telegram(msg)
-        time.sleep(0.5)
+        log(f"✅ Sent #{rank}: {pick['symbol']} (score={pick['score']})")
+        time.sleep(0.7)
 
-    log("✅ CRON RUN FINISHED")
+    log("✅ CRON RUN COMPLETE")
 
 # =========================================================
 # ENTRY
@@ -958,11 +897,11 @@ def run_bot():
 if __name__ == "__main__":
     try:
         if not BOT_TOKEN or not CHAT_ID:
-            log("❌ ENV VARIABLES MISSING — set BOT_TOKEN and CHAT_ID")
+            log("❌ BOT_TOKEN or CHAT_ID env variable missing")
             raise SystemExit(1)
         run_bot()
     except SystemExit:
         raise
     except Exception:
         traceback.print_exc()
-        log("❌ MAIN CRITICAL ERROR")
+        log("❌ CRITICAL ERROR IN MAIN")
