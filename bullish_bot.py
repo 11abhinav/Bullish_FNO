@@ -4,6 +4,8 @@ import threading
 import requests
 import pytz
 import logging
+import pandas as pd
+import yfinance as yf
 
 from zoneinfo import ZoneInfo
 from datetime import datetime, date
@@ -19,10 +21,14 @@ logging.basicConfig(
 
     format="%(asctime)s | %(levelname)s | %(message)s",
 
-    datefmt="%Y-%m-%d %H:%M:%S"
+    datefmt="%Y-%m-%d %H:%M:%S",
+
+    force=True
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
+
+logger.setLevel(logging.INFO)
 
 logger.info("=" * 80)
 logger.info("🚀 SCRIPT STARTED")
@@ -39,58 +45,14 @@ IST = ZoneInfo("Asia/Kolkata")
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 CHAT_ID = os.getenv("CHAT_ID")
 
-PE_OI_MIN_THRESHOLD = 50000
+CHECK_INTERVAL = 300
 
-# VERY IMPORTANT
-# LOWER THREADS TO REDUCE NSE BLOCKING
+PRICE_MOVE_THRESHOLD = 0.8
+
 MAX_WORKERS = 1
-
-HEADERS = {
-
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0 Safari/537.36"
-    ),
-
-    "Accept": "application/json",
-
-    "Accept-Language": "en-US,en;q=0.9",
-
-    "Referer": "https://www.nseindia.com/",
-
-    "Connection": "keep-alive"
-}
-
-# =========================================================
-# NSE HOLIDAYS 2026
-# =========================================================
-
-NSE_HOLIDAYS_2026 = {
-
-    date(2026, 1, 26),
-    date(2026, 3, 14),
-    date(2026, 3, 25),
-    date(2026, 4, 2),
-    date(2026, 4, 14),
-    date(2026, 5, 1),
-    date(2026, 8, 15),
-    date(2026, 10, 2),
-    date(2026, 11, 12),
-    date(2026, 12, 25)
-}
-
-# =========================================================
-# GLOBALS
-# =========================================================
-
-seen_alerts = set()
-
-seen_alerts_lock = threading.Lock()
-
-thread_local = threading.local()
 
 # =========================================================
 # WATCHLIST
@@ -174,14 +136,14 @@ logger.info(
 )
 
 # =========================================================
-# SAFE FUNCTIONS
+# SAFE FLOAT
 # =========================================================
 
 def safe_float(v):
 
     try:
 
-        return float(str(v).replace(",", ""))
+        return float(v)
 
     except:
 
@@ -213,12 +175,6 @@ def is_market_open():
     if now.weekday() >= 5:
 
         logger.info("❌ Weekend detected")
-
-        return False
-
-    if now.date() in NSE_HOLIDAYS_2026:
-
-        logger.info("❌ NSE Holiday")
 
         return False
 
@@ -263,6 +219,10 @@ def send_telegram(msg):
 
             return
 
+        logger.info(
+            "📨 Sending Telegram alert..."
+        )
+
         url = (
             f"https://api.telegram.org/"
             f"bot{BOT_TOKEN}/sendMessage"
@@ -296,128 +256,6 @@ def send_telegram(msg):
         )
 
 # =========================================================
-# SESSION
-# =========================================================
-
-def get_session():
-
-    now = time.time()
-
-    if (
-
-        not hasattr(thread_local, "session")
-
-        or
-
-        now - getattr(
-            thread_local,
-            "session_created",
-            0
-        ) > 1800
-    ):
-
-        logger.info(
-            "🌐 Creating NSE session..."
-        )
-
-        s = requests.Session()
-
-        s.headers.update(HEADERS)
-
-        try:
-
-            r = s.get(
-
-                "https://www.nseindia.com/api/marketStatus",
-
-                timeout=10
-            )
-
-            logger.info(
-                f"🌐 NSE Session Init "
-                f"Status={r.status_code}"
-            )
-
-            thread_local.session = s
-
-            thread_local.session_created = now
-
-            logger.info(
-                "✅ NSE session created"
-            )
-
-        except Exception:
-
-            logger.exception(
-                "❌ Failed to create NSE session"
-            )
-
-    return thread_local.session
-
-# =========================================================
-# NSE GET
-# =========================================================
-
-def nse_get(url, retries=1):
-
-    for attempt in range(retries):
-
-        try:
-
-            session = get_session()
-
-            logger.info(
-                f"🌐 NSE API Call | "
-                f"Attempt={attempt+1}"
-            )
-
-            r = session.get(
-
-                url,
-
-                timeout=20
-            )
-
-            logger.info(
-                f"📡 NSE Status="
-                f"{r.status_code}"
-            )
-
-            if r.status_code == 200:
-
-                logger.info(
-                    "✅ NSE API Success"
-                )
-
-                return r.json()
-
-            if r.status_code in (401, 403):
-
-                logger.warning(
-                    "⚠️ NSE session expired / blocked"
-                )
-
-                thread_local.session_created = 0
-
-            if r.status_code == 429:
-
-                logger.warning(
-                    "⚠️ NSE rate limit hit"
-                )
-
-                time.sleep(2)
-
-        except Exception:
-
-            logger.exception(
-                "❌ NSE ERROR"
-            )
-
-        time.sleep(1)
-
-    return {}
-
-# =========================================================
 # FETCH STOCK
 # =========================================================
 
@@ -429,67 +267,131 @@ def fetch_stock(symbol):
             f"🔍 Fetching: {symbol}"
         )
 
-        # IMPORTANT
-        # SLOW DOWN REQUESTS
         time.sleep(1)
 
-        result = {
+        df = yf.download(
 
-            "symbol": symbol,
+            f"{symbol}.NS",
 
-            "price": 0,
+            period="1d",
 
-            "prev_close": 0,
+            interval="5m",
 
-            "price_pct": 0,
-        }
+            progress=False,
 
-        eq_url = (
+            auto_adjust=True,
 
-            f"https://www.nseindia.com/api/"
-            f"quote-equity?symbol={symbol}"
+            threads=False
         )
-
-        eq_data = nse_get(eq_url)
 
         logger.info(
-            f"📦 NSE Response | "
-            f"{symbol} | "
-            f"HasData={bool(eq_data)}"
+            f"📦 Raw rows received: "
+            f"{len(df)} | {symbol}"
         )
 
-        if not eq_data:
+        if df.empty:
 
             logger.warning(
-                f"❌ Empty NSE response: "
-                f"{symbol}"
-            )
-
-            logger.warning(
-                "⚠️ NSE likely blocked "
-                "or returned empty response"
+                f"❌ No data: {symbol}"
             )
 
             return None
 
-        p = eq_data.get("priceInfo", {})
+        # =================================================
+        # FIX MULTI INDEX
+        # =================================================
 
-        result["price"] = safe_float(
-            p.get("lastPrice")
+        if isinstance(
+            df.columns,
+            pd.MultiIndex
+        ):
+
+            logger.info(
+                f"🛠️ Fixing MultiIndex: "
+                f"{symbol}"
+            )
+
+            df.columns = (
+                df.columns
+                .get_level_values(0)
+            )
+
+        logger.info(
+            f"📊 Columns: "
+            f"{list(df.columns)}"
         )
 
-        result["prev_close"] = safe_float(
-            p.get("previousClose")
+        required_cols = [
+
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Volume"
+        ]
+
+        for col_name in required_cols:
+
+            if col_name not in df.columns:
+
+                logger.warning(
+                    f"❌ Missing column "
+                    f"{col_name}: {symbol}"
+                )
+
+                return None
+
+            if isinstance(
+
+                df[col_name],
+
+                pd.DataFrame
+            ):
+
+                logger.warning(
+                    f"⚠️ DataFrame column detected "
+                    f"{col_name}: {symbol}"
+                )
+
+                df[col_name] = (
+                    df[col_name]
+                    .iloc[:, 0]
+                )
+
+        df.dropna(inplace=True)
+
+        logger.info(
+            f"📦 Clean rows: "
+            f"{len(df)} | {symbol}"
         )
 
-        price = result["price"]
+        if len(df) < 5:
 
-        prev_close = result["prev_close"]
+            logger.warning(
+                f"❌ Not enough candles: "
+                f"{symbol}"
+            )
+
+            return None
+
+        latest = df.iloc[-1]
+
+        prev_close = safe_float(
+            df["Close"].iloc[-2]
+        )
+
+        last_price = safe_float(
+            latest["Close"]
+        )
+
+        volume = int(
+            latest["Volume"]
+        )
 
         if prev_close <= 0:
 
             logger.warning(
-                f"❌ Invalid prev_close: "
+                f"❌ Invalid prev close: "
                 f"{symbol}"
             )
 
@@ -497,24 +399,33 @@ def fetch_stock(symbol):
 
         price_pct = (
             (
-                price - prev_close
+                last_price - prev_close
             ) / prev_close
         ) * 100
 
-        result["price_pct"] = price_pct
-
         logger.info(
             f"✅ {symbol} | "
-            f"Price={price} | "
-            f"Move={price_pct:+.2f}%"
+            f"Price={round(last_price,2)} | "
+            f"Move={round(price_pct,2)}%"
         )
 
-        return result
+        return {
+
+            "symbol": symbol,
+
+            "price": last_price,
+
+            "prev_close": prev_close,
+
+            "price_pct": price_pct,
+
+            "volume": volume
+        }
 
     except Exception:
 
         logger.exception(
-            f"❌ {symbol} FETCH ERROR"
+            f"❌ FETCH ERROR: {symbol}"
         )
 
         return None
@@ -527,47 +438,38 @@ def process_bullish_setup(symbol, stock):
 
     try:
 
+        logger.info(
+            f"🔎 Processing: {symbol}"
+        )
+
         price_pct = stock.get(
             "price_pct",
             0
         )
 
-        # LOWERED THRESHOLD
-        if price_pct < 0.8:
+        logger.info(
+            f"📈 {symbol} Move="
+            f"{round(price_pct,2)}%"
+        )
+
+        if price_pct < PRICE_MOVE_THRESHOLD:
 
             logger.info(
                 f"❌ Rejected: {symbol} | "
-                f"Move={price_pct:+.2f}%"
+                f"Move below threshold"
             )
 
             return None
 
-        key = (
-            f"{symbol}-"
-            f"{ist_now().strftime('%Y-%m-%d-%H-%M')}"
-        )
-
-        with seen_alerts_lock:
-
-            if key in seen_alerts:
-
-                logger.info(
-                    f"⚠️ Duplicate skipped: "
-                    f"{symbol}"
-                )
-
-                return None
-
-            seen_alerts.add(key)
-
         msg = (
             f"🔥 BULLISH SETUP\n\n"
             f"Stock: {symbol}\n"
-            f"Move: {price_pct:+.2f}%"
+            f"Move: {price_pct:+.2f}%\n"
+            f"Price: ₹{stock['price']}"
         )
 
         logger.info(
-            f"🚀 Bullish setup detected: "
+            f"🚀 ALERT TRIGGERED: "
             f"{symbol}"
         )
 
@@ -576,7 +478,7 @@ def process_bullish_setup(symbol, stock):
     except Exception:
 
         logger.exception(
-            f"❌ {symbol} PROCESS ERROR"
+            f"❌ PROCESS ERROR: {symbol}"
         )
 
         return None
@@ -590,17 +492,12 @@ def run_bot():
     logger.info("=" * 80)
 
     logger.info(
-        "🚀 Bullish Setup Scan Started"
+        "🚀 NEW SCAN STARTED"
     )
 
     logger.info(
         f"⏰ IST Time: "
         f"{datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-
-    logger.info(
-        f"📊 Total Symbols: "
-        f"{len(ALL_FNO_SYMBOLS)}"
     )
 
     logger.info("=" * 80)
@@ -616,7 +513,7 @@ def run_bot():
     all_data = {}
 
     logger.info(
-        "📊 Starting NSE fetch..."
+        "📊 Starting stock fetch..."
     )
 
     with ThreadPoolExecutor(
@@ -632,20 +529,24 @@ def run_bot():
         )
 
     logger.info(
-        f"✅ NSE Fetch Completed | "
-        f"Received={len(results)}"
+        f"📦 Total results received: "
+        f"{len(results)}"
     )
 
     for r in results:
 
         if not r:
 
+            logger.warning(
+                "⚠️ Empty stock result skipped"
+            )
+
             continue
 
         all_data[r["symbol"]] = r
 
     logger.info(
-        f"📦 Valid Stocks Received: "
+        f"✅ Valid stocks: "
         f"{len(all_data)}"
     )
 
@@ -659,8 +560,9 @@ def run_bot():
     ):
 
         logger.info(
-            f"🔍 Checking: {symbol} | "
-            f"Progress={idx}/{len(all_data)}"
+            f"🔄 Checking "
+            f"{idx}/{len(all_data)}: "
+            f"{symbol}"
         )
 
         msg = process_bullish_setup(
@@ -682,14 +584,14 @@ def run_bot():
     logger.info("=" * 80)
 
     logger.info(
-        f"✅ Scan completed | "
+        f"✅ SCAN FINISHED | "
         f"Alerts={alerts_sent}"
     )
 
     logger.info("=" * 80)
 
 # =========================================================
-# START
+# CONTINUOUS LOOP
 # =========================================================
 
 if __name__ == "__main__":
@@ -699,7 +601,7 @@ if __name__ == "__main__":
         if not BOT_TOKEN or not CHAT_ID:
 
             logger.error(
-                "❌ FATAL: BOT_TOKEN / CHAT_ID not set"
+                "❌ FATAL: BOT_TOKEN / CHAT_ID missing"
             )
 
             raise SystemExit(1)
@@ -707,7 +609,7 @@ if __name__ == "__main__":
         logger.info("=" * 80)
 
         logger.info(
-            "🚀 Bullish Institutional Bot Started"
+            "🚀 Momentum Bot Started"
         )
 
         logger.info(
@@ -717,11 +619,24 @@ if __name__ == "__main__":
 
         logger.info("=" * 80)
 
-        run_bot()
+        while True:
 
-        logger.info(
-            "✅ BOT EXECUTION FINISHED"
-        )
+            try:
+
+                run_bot()
+
+            except Exception:
+
+                logger.exception(
+                    "❌ LOOP ERROR"
+                )
+
+            logger.info(
+                f"😴 Sleeping "
+                f"{CHECK_INTERVAL} sec..."
+            )
+
+            time.sleep(CHECK_INTERVAL)
 
     except Exception:
 
