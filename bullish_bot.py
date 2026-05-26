@@ -432,8 +432,14 @@ def fetch_nse_fno(symbol):
 
         if not data:
 
+            log(f"⚠️ FnO unavailable: {symbol}")
+
             return {
-                "oi_missing": True
+                "oi": 0,
+                "oi_chg": 0,
+                "oi_chg_pct": 0,
+                "lot_size": 0,
+                "oi_missing": True,
             }
 
         records = data.get("records", {})
@@ -443,7 +449,11 @@ def fetch_nse_fno(symbol):
         if not expiry_dates:
 
             return {
-                "oi_missing": True
+                "oi": 0,
+                "oi_chg": 0,
+                "oi_chg_pct": 0,
+                "lot_size": 0,
+                "oi_missing": True,
             }
 
         nearest_expiry = expiry_dates[0]
@@ -481,7 +491,11 @@ def fetch_nse_fno(symbol):
         if total_oi <= 0:
 
             return {
-                "oi_missing": True
+                "oi": 0,
+                "oi_chg": 0,
+                "oi_chg_pct": 0,
+                "lot_size": 0,
+                "oi_missing": True,
             }
 
         prev_oi = total_oi - total_oi_change
@@ -1041,7 +1055,13 @@ def build_alert_card(rank, result):
 # =========================================================
 
 def run_bot():
-    log(f"🚀 RUN STARTED | {datetime.now(IST).strftime('%H:%M:%S')} IST")
+    log("━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    log("🚀 BOT RUN STARTED")
+    log(
+        f"🕐 Time: "
+        f"{datetime.now(IST).strftime('%d %b %Y %H:%M:%S IST')}"
+    )
+    log("━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     if not is_market_open():
         log("⏰ Outside market hours — skipping")
@@ -1052,6 +1072,8 @@ def run_bot():
 
     raw_results = []
     for sym, sector, yf_ov in WATCHLIST:
+
+        log(f"🔍 Scanning: {sym}")
         result = process_stock(sym, sector, yf_ov)
         if result:
             raw_results.append(result)
@@ -1062,7 +1084,14 @@ def run_bot():
     log(f"🏆 Above score gate (≥{MIN_SCORE}): {len(candidates)}")
 
     if not candidates:
-        log("💤 No qualifying picks — no alerts sent")
+        log("💤 No qualifying picks")
+
+        # Heartbeat so user knows bot is alive
+        send_telegram(
+            "✅ Bot running successfully\n"
+            "📭 No qualifying picks in this cycle"
+        )
+
         return
 
     top_picks = sorted(candidates, key=lambda x: x["score"], reverse=True)[:MAX_ALERTS]
