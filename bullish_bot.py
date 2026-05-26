@@ -317,80 +317,197 @@ def get_nse_session(force_refresh=False):
     return _nse_session
 
 
+
+# =========================================================
+# NSE GET  [FIXED v6]
+# =========================================================
+#
+# WHAT WAS FIXED
+# ---------------------------------------------------------
+# ✅ Stops useless retries on HTTP 404
+# ✅ Faster execution
+# ✅ Cleaner logs
+# ✅ Retries still active for:
+#      - timeout
+#      - 401
+#      - 403
+#      - 5xx
+#
+# =========================================================
+
 def nse_get(url, retries=3, backoff=2.0):
-    """Robust GET: session auto-refresh + exponential retry on errors."""
+
     for attempt in range(1, retries + 1):
+
         s = get_nse_session()
+
         if not s:
             return None
+
         try:
+
             r = s.get(url, timeout=8)
+
+            # SUCCESS
             if r.status_code == 200:
                 return r.json()
+
+            # SESSION EXPIRED
             if r.status_code in (401, 403):
-                log(f"⟳ NSE session expired ({r.status_code}) — refreshing")
+
+                log(
+                    f"⟳ NSE session expired "
+                    f"({r.status_code}) — refreshing"
+                )
+
                 get_nse_session(force_refresh=True)
-            else:
-                log(f"⚠️ NSE HTTP {r.status_code} (attempt {attempt})")
+
+                time.sleep(backoff)
+
+                continue
+
+            # =================================================
+            # FIX:
+            # DO NOT RETRY HTTP 404
+            # =================================================
+            if r.status_code == 404:
+
+                log("⚠️ NSE HTTP 404 — skipping")
+
+                return None
+
+            # OTHER HTTP ERRORS
+            log(
+                f"⚠️ NSE HTTP {r.status_code} "
+                f"(attempt {attempt})"
+            )
+
             time.sleep(backoff * attempt)
+
         except requests.exceptions.Timeout:
+
             log(f"⏳ NSE timeout (attempt {attempt})")
+
             time.sleep(backoff * attempt)
+
         except Exception:
+
             log(f"❌ NSE request error (attempt {attempt})")
+
             time.sleep(backoff * attempt)
+
     return None
 
 # =========================================================
 # NSE FnO DATA
 # =========================================================
 
+
+# =========================================================
+# NSE FnO DATA  [OPTION CHAIN VERSION]
+# =========================================================
+#
+# WHAT WAS MODIFIED
+# ---------------------------------------------------------
+# OLD API:
+#   api/quote-derivative
+#
+# NEW API:
+#   api/option-chain-equities
+#
+# BENEFITS:
+#   ✅ more stable
+#   ✅ fewer failures
+#   ✅ reliable OI data
+#
+# =========================================================
+
 def fetch_nse_fno(symbol):
-    """
-    Fetches nearest-expiry Stock Futures data from NSE.
 
-    OI sign convention:
-      oi_chg_pct NEGATIVE → OI unwinding → Short Covering (when price ↑)
-      oi_chg_pct POSITIVE → OI building  → Long Buildup   (when price ↑)
-
-    NSE's changeinOpenInterest = current_OI - prev_OI (signed).
-    prev_oi = oi - oi_chg; guarded against ≤ 0.
-    """
     try:
+
         data = nse_get(
-            f"https://www.nseindia.com/api/quote-derivative?symbol={symbol}"
+            f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
         )
+
         if not data:
-            return {}
 
-        stocks = data.get("stocks", [])
-        fut = next(
-            (r for r in stocks
-             if r.get("metadata", {}).get("instrumentType") == "Stock Futures"),
-            None,
+            return {
+                "oi_missing": True
+            }
+
+        records = data.get("records", {})
+
+        expiry_dates = records.get("expiryDates", [])
+
+        if not expiry_dates:
+
+            return {
+                "oi_missing": True
+            }
+
+        nearest_expiry = expiry_dates[0]
+
+        chain = records.get("data", [])
+
+        total_oi = 0
+        total_oi_change = 0
+
+        # Aggregate CALL + PUT OI
+        for row in chain:
+
+            if row.get("expiryDate") != nearest_expiry:
+                continue
+
+            ce = row.get("CE", {})
+            pe = row.get("PE", {})
+
+            total_oi += int(
+                ce.get("openInterest", 0) or 0
+            )
+
+            total_oi_change += int(
+                ce.get("changeinOpenInterest", 0) or 0
+            )
+
+            total_oi += int(
+                pe.get("openInterest", 0) or 0
+            )
+
+            total_oi_change += int(
+                pe.get("changeinOpenInterest", 0) or 0
+            )
+
+        if total_oi <= 0:
+
+            return {
+                "oi_missing": True
+            }
+
+        prev_oi = total_oi - total_oi_change
+
+        oi_chg_pct = (
+            (total_oi_change / prev_oi) * 100
+            if prev_oi > 0
+            else 0.0
         )
-        if not fut:
-            return {}
-
-        meta      = fut.get("metadata", {})
-        tradeinfo = fut.get("marketDeptOrderBook", {}).get("tradeInfo", {})
-
-        oi       = int(tradeinfo.get("openInterest",         0) or 0)
-        oi_chg   = int(tradeinfo.get("changeinOpenInterest", 0) or 0)
-        lot_size = int(meta.get("lotSize",                   0) or 0)
-
-        prev_oi    = oi - oi_chg
-        oi_chg_pct = (oi_chg / prev_oi * 100) if prev_oi > 0 else 0.0
 
         return {
-            "oi":         oi,
-            "oi_chg":     oi_chg,
+            "oi": total_oi,
+            "oi_chg": total_oi_change,
             "oi_chg_pct": oi_chg_pct,
-            "lot_size":   lot_size,
+            "lot_size": 0,
+            "oi_missing": False,
         }
+
     except Exception:
+
         traceback.print_exc()
-        return {}
+
+        return {
+            "oi_missing": True
+        }
+
 
 # =========================================================
 # NSE EQUITY DATA  (prev-day delivery + 52-week high)
@@ -568,7 +685,18 @@ def passes_hard_filters(symbol, price_data, fno_data):
     day_high     = price_data["day_high"]
     five_day_avg = price_data["five_day_avg"]
     oi           = fno_data.get("oi", 0)
-    abs_oi_chg   = abs(fno_data.get("oi_chg_pct", 0))
+    # =========================================================
+    # FIX:
+    # Proper missing FnO handling
+    # =========================================================
+
+    if fno_data.get("oi_missing"):
+
+        return False, "FnO data unavailable"
+
+    abs_oi_chg = abs(
+        fno_data.get("oi_chg_pct", 0)
+    )
 
     if move_pct <= 0:
         return False, "No upside move"
@@ -870,7 +998,7 @@ def build_alert_card(rank, result):
     msg += "\n━━ 📊 FnO / OI ━━\n"
     if oi > 0:
         msg += (
-            f"  📋 OI:           {oi:,} contracts\n"
+            f"  📋 OI:           {oi:,} option OI\n"
             f"  🔁 OI Change:    {oi_chg:+,}  ({oi_chg_pct:+.2f}%)  {oi_dir}\n"
             f"  🏷️ Signal:       {fno_badge(fno_type)}\n"
         )
