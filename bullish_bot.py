@@ -60,7 +60,6 @@
 #   +5   price within 1.5% of smoothed day high
 #
 # 52-Week High Bonus   max 5 pts
-#   +5   price within 5% of 52-week high
 #
 # HARD FILTERS (stock disqualified if any fails)
 #   • move_pct > 0               upside only
@@ -399,49 +398,33 @@ def nse_get(url, retries=3, backoff=2.0):
     return None
 
 # =========================================================
-# NSE FnO DATA
-# =========================================================
-
-
-# =========================================================
-# NSE FnO DATA  [OPTION CHAIN VERSION]
+# FnO FETCH  [YAHOO-ONLY MODE]
 # =========================================================
 #
-# WHAT WAS MODIFIED
-# ---------------------------------------------------------
-# OLD API:
-#   api/quote-derivative
+# WHY:
+# NSE blocks cloud/VPS/Railway requests.
 #
-# NEW API:
-#   api/option-chain-equities
+# So we completely disable NSE dependency.
 #
-# BENEFITS:
-#   ✅ more stable
-#   ✅ fewer failures
-#   ✅ reliable OI data
+# Strategy still works using:
+#   - momentum
+#   - breakout
+#   - volume
+#   - delivery
 #
 # =========================================================
 
 def fetch_nse_fno(symbol):
 
-    try:
+    log(f"📊 {symbol}: Yahoo-only mode active")
 
-        data = nse_get(
-            f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
-        )
-
-        if not data:
-
-            log(f"⚠️ FnO unavailable: {symbol}")
-
-            return {
-                "oi": 0,
-                "oi_chg": 0,
-                "oi_chg_pct": 0,
-                "lot_size": 0,
-                "oi_missing": True,
-            }
-
+    return {
+        "oi": 0,
+        "oi_chg": 0,
+        "oi_chg_pct": 0,
+        "lot_size": 0,
+        "oi_missing": True,
+    }
         records = data.get("records", {})
 
         expiry_dates = records.get("expiryDates", [])
@@ -685,51 +668,48 @@ def fetch_price(symbol, yf_sym_override=None):
         return None
 
 # =========================================================
-# HARD FILTERS
+# HARD FILTERS  [FINAL FIXED]
 # =========================================================
 
 def passes_hard_filters(symbol, price_data, fno_data):
-    """
-    All 5 must pass. Returns (bool, reason_str).
-    Delivery is NOT a hard filter — unavailable for some symbols,
-    and a stock can qualify on strong FnO + price alone.
-    """
-    move_pct     = price_data["move_pct"]
-    last_price   = price_data["price"]
-    day_high     = price_data["day_high"]
-    five_day_avg = price_data["five_day_avg"]
-    oi           = fno_data.get("oi", 0)
-    # =========================================================
-    # FIX:
-    # Proper missing FnO handling
-    # =========================================================
+
+    move_pct  = price_data["move_pct"]
+    last_price = price_data["price"]
+    day_high   = price_data["day_high"]
+
+    # =====================================================
+    # FnO OPTIONAL MODE
+    # =====================================================
 
     if fno_data.get("oi_missing"):
 
-        return False, "FnO data unavailable"
+        log(f"⚠️ {symbol}: FnO unavailable — continuing")
 
-    abs_oi_chg = abs(
-        fno_data.get("oi_chg_pct", 0)
-    )
+    # =====================================================
+    # UPSIDE FILTER
+    # =====================================================
 
     if move_pct <= 0:
+
         return False, "No upside move"
 
-    if abs_oi_chg < OI_T1:
-        return False, f"Weak OI signal ({abs_oi_chg:.1f}% < {OI_T1}%)"
+    # =====================================================
+    # NOT FAR FROM HIGH
+    # =====================================================
 
-    if oi < MIN_OI_CONTRACTS:
-        return False, f"Low/missing OI ({oi:,} < {MIN_OI_CONTRACTS:,})"
+    pct_from_high = (
+        ((day_high - last_price) / day_high) * 100
+        if day_high > 0
+        else 999
+    )
 
-    pct_from_high = ((day_high - last_price) / day_high) * 100
-    if pct_from_high > NEAR_HIGH_PCT:
-        return False, f"Fading from high ({pct_from_high:.1f}% below)"
+    if pct_from_high > 3:
 
-    if five_day_avg > 0 and last_price < five_day_avg:
-        return False, f"Below 5-day avg ₹{five_day_avg:.2f}"
+        return False, (
+            f"Far from high ({pct_from_high:.1f}%)"
+        )
 
     return True, "OK"
-
 # =========================================================
 # SCORING ENGINE  (0–120 pts)
 # =========================================================
@@ -1050,11 +1030,13 @@ def build_alert_card(rank, result):
 
     return msg
 
+
 # =========================================================
 # MAIN BOT
 # =========================================================
 
 def run_bot():
+
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━")
     log("🚀 BOT RUN STARTED")
     log(
@@ -1068,25 +1050,38 @@ def run_bot():
         return
 
     log("✅ Market hours — starting scan")
-    get_nse_session()
 
     raw_results = []
+
     for sym, sector, yf_ov in WATCHLIST:
 
         log(f"🔍 Scanning: {sym}")
+
         result = process_stock(sym, sector, yf_ov)
+
         if result:
             raw_results.append(result)
 
     log(f"📦 Passed hard filters: {len(raw_results)}")
 
-    candidates = [r for r in raw_results if r["score"] >= MIN_SCORE]
-    log(f"🏆 Above score gate (≥{MIN_SCORE}): {len(candidates)}")
+    candidates = [
+        r for r in raw_results
+        if r["score"] >= MIN_SCORE
+    ]
+
+    log(
+        f"🏆 Above score gate (≥{MIN_SCORE}): "
+        f"{len(candidates)}"
+    )
+
+    # =====================================================
+    # HEARTBEAT
+    # =====================================================
 
     if not candidates:
+
         log("💤 No qualifying picks")
 
-        # Heartbeat so user knows bot is alive
         send_telegram(
             "✅ Bot running successfully\n"
             "📭 No qualifying picks in this cycle"
@@ -1094,17 +1089,29 @@ def run_bot():
 
         return
 
-    top_picks = sorted(candidates, key=lambda x: x["score"], reverse=True)[:MAX_ALERTS]
+    top_picks = sorted(
+        candidates,
+        key=lambda x: x["score"],
+        reverse=True
+    )[:MAX_ALERTS]
+
     log(f"📨 Sending {len(top_picks)} alerts")
 
     for rank, pick in enumerate(top_picks, 1):
+
         msg = build_alert_card(rank, pick)
+
         send_telegram(msg)
-        log(f"✅ Sent #{rank}: {pick['symbol']} (score={pick['score']})")
+
+        log(
+            f"✅ Sent #{rank}: "
+            f"{pick['symbol']} "
+            f"(score={pick['score']})"
+        )
+
         time.sleep(0.7)
 
     log("✅ RUN COMPLETE")
-
 # =========================================================
 # ENTRY
 # =========================================================
