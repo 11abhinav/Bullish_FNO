@@ -419,9 +419,6 @@ def fetch_nse_fno(symbol):
     # =====================================================
     # YAHOO-ONLY MODE
     # =====================================================
-    # NSE FnO APIs are blocked on Railway/cloud.
-    # We disable FnO dependency completely.
-    # =====================================================
 
     log(f"📊 {symbol}: Yahoo-only mode active")
 
@@ -442,45 +439,11 @@ def fetch_nse_equity(symbol):
     # =====================================================
     # YAHOO-ONLY MODE
     # =====================================================
-    # Remove NSE dependency entirely.
-    # Delivery/52W high disabled safely.
-    # =====================================================
 
     return {
         "delivery_pct": None,
         "week_52_high": 0.0,
     }
-
-        trade      = data.get("tradeInfo",  {})
-        price_info = data.get("priceInfo",  {})
-
-        # ── Prev-day delivery % ───────────────────────────
-        raw_del = trade.get("deliveryToTradedQuantity")
-        if raw_del is not None:
-            try:
-                delivery_pct = float(raw_del)
-            except (ValueError, TypeError):
-                delivery_pct = None
-        else:
-            delivery_pct = None   # None = unavailable, NOT 0%
-
-        # ── 52-week high ──────────────────────────────────
-        week_52_high = 0.0
-        try:
-            week_52_high = float(
-                price_info.get("weekHighLow", {}).get("max", 0) or 0
-            )
-        except (ValueError, TypeError):
-            week_52_high = 0.0
-
-        return {
-            "delivery_pct": delivery_pct,   # prev-day; None = unavailable
-            "week_52_high": week_52_high,
-        }
-
-    except Exception:
-        traceback.print_exc()
-        return {}
 
 # =========================================================
 # YAHOO FINANCE — PRICE + HISTORICAL DATA
