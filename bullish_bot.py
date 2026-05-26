@@ -416,6 +416,13 @@ def nse_get(url, retries=3, backoff=2.0):
 
 def fetch_nse_fno(symbol):
 
+    # =====================================================
+    # YAHOO-ONLY MODE
+    # =====================================================
+    # NSE FnO APIs are blocked on Railway/cloud.
+    # We disable FnO dependency completely.
+    # =====================================================
+
     log(f"📊 {symbol}: Yahoo-only mode active")
 
     return {
@@ -425,39 +432,24 @@ def fetch_nse_fno(symbol):
         "lot_size": 0,
         "oi_missing": True,
     }
-        
 
 # =========================================================
 # NSE EQUITY DATA  (prev-day delivery + 52-week high)
 # =========================================================
 
 def fetch_nse_equity(symbol):
-    """
-    Fetches from NSE's quote-equity endpoint.
 
-    DELIVERY NOTE:
-      tradeInfo.deliveryToTradedQuantity during market hours =
-      PREVIOUS SESSION's finalised delivery %.
-      This is always populated and always accurate intraday.
-      It is NOT today's delivery (which doesn't exist until EOD).
-      We use it intentionally as a prev-day conviction signal.
+    # =====================================================
+    # YAHOO-ONLY MODE
+    # =====================================================
+    # Remove NSE dependency entirely.
+    # Delivery/52W high disabled safely.
+    # =====================================================
 
-    DELIVERY PARSING:
-      NSE returns this field as a plain float (e.g. 63.9).
-      We treat None/missing as genuinely unavailable (not 0%).
-      A stock with no delivery data scores 0 delivery points
-      but is not disqualified — FnO signal alone can qualify it.
-
-    52-WEEK HIGH:
-      Pulled from priceInfo.weekHighLow.max — more reliable
-      than a separate yfinance historical download.
-    """
-    try:
-        data = nse_get(
-            f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
-        )
-        if not data:
-            return {}
+    return {
+        "delivery_pct": None,
+        "week_52_high": 0.0,
+    }
 
         trade      = data.get("tradeInfo",  {})
         price_info = data.get("priceInfo",  {})
